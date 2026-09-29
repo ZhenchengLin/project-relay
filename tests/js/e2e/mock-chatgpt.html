@@ -1,0 +1,255 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>ChatGPT (Project Relay mock)</title>
+<style>
+  body { font: 14px sans-serif; margin: 0; padding: 16px 16px 140px; }
+  [data-turn-key] { border-bottom: 1px solid #ddd; padding: 8px 0; }
+  [data-user-message-bubble] { background: #eef; padding: 6px; }
+  form { position: fixed; bottom: 0; left: 0; right: 0; background: #fff; padding: 12px; display: flex; gap: 8px; }
+  #prompt-textarea { flex: 1; min-height: 40px; border: 1px solid #999; padding: 6px; white-space: pre-wrap; }
+  pre { background: #222; color: #eee; padding: 8px; }
+  [role="alert"] { color: #b00; }
+</style>
+</head>
+<body>
+<header>
+  <button data-testid="model-switcher-dropdown-button" aria-haspopup="menu" id="model">ChatGPT Auto</button>
+  <div id="menu" role="menu" hidden>
+    <div role="menuitem">Auto</div>
+    <div role="menuitem">Instant</div>
+    <div role="menuitem">Thinking</div>
+  </div>
+</header>
+<main id="thread"></main>
+<div id="notices"></div>
+<form data-chatgpt-composer onsubmit="return false">
+  <div id="prompt-textarea" contenteditable="true" role="textbox" class="ProseMirror"></div>
+  <button data-testid="send-button" type="submit" aria-label="Send prompt" disabled>Send</button>
+  <!-- Live-like: localized label, no test id, so selectors cannot see it. -->
+  <button type="button" aria-label="中断生成" hidden>■</button>
+</form>
+<script>
+(() => {
+  const FENCE = "`".repeat(3);
+  const store = {
+    load() { return JSON.parse(localStorage.getItem("mock-convs") || "{}"); },
+    save(convs) { localStorage.setItem("mock-convs", JSON.stringify(convs)); },
+  };
+  const $ = (s) => document.querySelector(s);
+  const composer = $("#prompt-textarea");
+  const send = $('[data-testid="send-button"]');
+  const stop = $('button[aria-label="中断生成"]');
+  const modelButton = $("#model");
+  const menu = $("#menu");
+
+  function convId() {
+    const m = /\/c\/([0-9A-Za-z-]+)/.exec(location.pathname);
+    return m ? m[1] : null;
+  }
+
+  function renderMarkdown(text) {
+    const box = document.createElement("div");
+    box.className = "MarkdownRoot-a1b2c prose";
+    const parts = text.split(new RegExp(FENCE + "(\\w*)\\n([\\s\\S]*?)" + FENCE, "g"));
+    for (let i = 0; i < parts.length; i += 3) {
+      if (parts[i].trim()) {
+        for (const para of parts[i].trim().split(/\n{2,}/)) {
+          const p = document.createElement("p");
+          p.textContent = para;
+          box.append(p);
+        }
+      }
+      if (i + 2 < parts.length) {
+        // Live-like: CodeBlock-* wrapper with its own Copy button.
+        const block = document.createElement("div");
+        block.className = "CodeBlock-x9y8z";
+        const header = document.createElement("div");
+        header.textContent = parts[i + 1] || "";
+        // Live ChatGPT puts SVG icons in the code block header.
+        const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        icon.append(document.createElementNS("http://www.w3.org/2000/svg", "path"));
+        header.prepend(icon);
+        const copy = document.createElement("button");
+        copy.setAttribute("aria-label", "Copy");
+        copy.append(document.createElementNS("http://www.w3.org/2000/svg", "svg"), "Copy");
+        header.append(copy);
+        const pre = document.createElement("pre");
+        const code = document.createElement("code");
+        if (parts[i + 1]) code.className = "language-" + parts[i + 1];
+        code.textContent = parts[i + 2].replace(/\n$/, "");
+        pre.append(code);
+        block.append(header, pre);
+        box.append(block);
+      }
+    }
+    return box;
+  }
+
+  function groupEl(turn) {
+    const g = document.createElement("section");
+    g.setAttribute("data-turn-key", turn.key);
+    const user = document.createElement("div");
+    user.className = "group/user-message";
+    user.setAttribute("data-user-message-bubble", "");
+    user.textContent = turn.user;
+    g.append(user);
+    // The user message has its own action row, BEFORE the reply.
+    g.append(actionRow(["复制消息", "共享提示", "编辑消息"], "turn-action-controls flex"));
+    if (turn.assistant != null) {
+      const a = document.createElement("div");
+      a.setAttribute("data-conversation-role", "assistant");
+      a.append(renderMarkdown(turn.assistant));
+      g.append(a);
+      if (turn.done) g.append(actions());
+    }
+    return g;
+  }
+
+  // Live DOM (2026-09, zh-CN): no test ids; rows are .turn-action-controls.
+  function actionRow(labels, className) {
+    const row = document.createElement("div");
+    row.className = className;
+    for (const label of labels) {
+      const b = document.createElement("button");
+      b.setAttribute("aria-label", label);
+      b.append(document.createElementNS("http://www.w3.org/2000/svg", "svg"));
+      row.append(b);
+    }
+    return row;
+  }
+
+  // The reply's row has no recognizable class: Relay must rely on position
+  // and count. The user message's row carries turn-action-controls as a trap.
+  function actions() {
+    return actionRow(["复制", "分享", "朗读", "重新生成回复", "更多操作"], "flex gap-1");
+  }
+
+  function renderAll() {
+    const thread = $("#thread");
+    thread.replaceChildren();
+    const id = convId();
+    if (!id) return;
+    const conv = store.load()[id];
+    if (!conv) {
+      thread.textContent = "Conversation not found";
+      return;
+    }
+    for (const turn of conv.turns) thread.append(groupEl(turn));
+    modelButton.textContent = "ChatGPT " + (conv.model || "Auto");
+  }
+
+  composer.addEventListener("input", () => {
+    send.disabled = !composer.innerText.trim();
+  });
+
+  // Radix-like: menus open on pointerdown, not click.
+  modelButton.addEventListener("pointerdown", () => { menu.hidden = !menu.hidden; });
+  for (const item of menu.querySelectorAll('[role="menuitem"]')) {
+    item.addEventListener("click", () => {
+      modelButton.textContent = "ChatGPT " + item.textContent;
+      menu.hidden = true;
+      const id = convId();
+      if (id) {
+        const convs = store.load();
+        convs[id].model = item.textContent;
+        store.save(convs);
+      }
+    });
+  }
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  send.addEventListener("click", async () => {
+    const prompt = composer.innerText;
+    if (!prompt.trim()) return;
+    composer.textContent = "";
+    send.disabled = true;
+    send.hidden = true;
+    stop.hidden = false;
+    const model = modelButton.textContent.replace(/^ChatGPT /, "");
+
+    // Optimistic, non-durable group.
+    const pending = groupEl({ key: "pending-chatgpt-submit", user: prompt });
+    $("#thread").append(pending);
+
+    const res = await fetch("/__mock/reply", {
+      method: "POST",
+      body: JSON.stringify({ prompt, model, conversation: convId(), path: location.pathname }),
+    });
+    const plan = await res.json();
+    await sleep(plan.acceptDelayMs ?? 500);
+
+    if (plan.mode === "drop") {
+      pending.remove();
+      stop.hidden = true;
+      send.hidden = false;
+      return;
+    }
+    if (plan.mode === "too_long") {
+      pending.remove();
+      const n = document.createElement("div");
+      n.setAttribute("role", "alert");
+      n.textContent = "The conversation is too long, please start a new one.";
+      $("#notices").append(n);
+      stop.hidden = true;
+      send.hidden = false;
+      return;
+    }
+
+    const convs = store.load();
+    let id = convId();
+    if (!id) {
+      id = crypto.randomUUID();
+      convs[id] = { turns: [], model };
+      history.pushState({}, "", "/c/" + id);
+    }
+    const turn = { key: crypto.randomUUID(), user: prompt, assistant: null, done: false, model };
+    convs[id].turns.push(turn);
+    store.save(convs);
+
+    const group = groupEl(turn);
+    pending.replaceWith(group);
+
+    const a = document.createElement("div");
+    a.setAttribute("data-conversation-role", "assistant");
+    group.append(a);
+
+    // "Thinking" phase: a status line inside a reply root, unchanged for a
+    // while, no action row yet (reproduces the live early-completion bug).
+    const status = document.createElement("div");
+    status.className = "MarkdownRoot-a1b2c";
+    status.textContent = "规划验证流程";
+    a.append(status);
+    await sleep(plan.thinkMs ?? 8000);
+
+    // While streaming, one unrelated button sits after the reply.
+    const scrollDown = document.createElement("button");
+    scrollDown.setAttribute("aria-label", "滚动到底部");
+    group.append(scrollDown);
+
+    const text = plan.text || "";
+    const chunks = Math.max(1, Math.ceil(text.length / 40));
+    for (let i = 1; i <= chunks; i++) {
+      a.replaceChildren(renderMarkdown(text.slice(0, Math.ceil((text.length * i) / chunks))));
+      await sleep(plan.chunkMs ?? 60);
+    }
+    stop.hidden = true;
+    send.hidden = false;
+    await sleep(300);
+    scrollDown.remove();
+    group.append(actions());
+    const saved = store.load();
+    const t = saved[id].turns.find((x) => x.key === turn.key);
+    t.assistant = text;
+    t.done = true;
+    store.save(saved);
+  });
+
+  window.addEventListener("popstate", renderAll);
+  renderAll();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e ".[dev]"
+      - run: pytest -q
+      - name: Package builds and installs
+        run: |
+          python -m pip wheel . -w dist --no-deps
+          python -m venv /tmp/venv && /tmp/venv/bin/pip install dist/*.whl
+          PROJECT_RELAY_HOME=/tmp/relay-home /tmp/venv/bin/prelay --help
+
+  extension:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: node --test ./*.test.mjs
+        working-directory: tests/js
+      - name: Extension scripts parse
+        run: for f in project_relay/relay/extension/*.js; do node --check "$f"; done

@@ -1,0 +1,45 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root { color-scheme: light dark; --muted:#888; --accent:#2d6cdf; --ok:#2f9e57; --warn:#c77c02; --bad:#c23b3b; }
+  body { font: 13px/1.45 -apple-system, system-ui, sans-serif; width: 340px; margin: 0; padding: 12px; }
+  h1 { font-size: 14px; margin: 0 0 8px; }
+  .muted { color: var(--muted); }
+  .card { border: 1px solid rgba(128,128,128,.3); border-radius: 8px; padding: 8px; margin: 8px 0; }
+  .row { display: flex; gap: 6px; align-items: center; margin: 6px 0; }
+  label { font-size: 12px; }
+  select, input, textarea { font: inherit; width: 100%; box-sizing: border-box; }
+  textarea { height: 64px; resize: vertical; }
+  button { font: inherit; border: 0; border-radius: 6px; padding: 5px 10px; cursor: pointer; background: var(--accent); color: #fff; }
+  button.secondary { background: rgba(128,128,128,.25); color: inherit; }
+  .status-RUNNING { color: var(--ok); } .status-PAUSED, .status-HUMAN_REQUIRED { color: var(--warn); }
+  .status-STOPPED, .status-FINISHED { color: var(--muted); }
+  .err { color: var(--bad); white-space: pre-wrap; }
+  .bar { height: 4px; background: rgba(128,128,128,.25); border-radius: 2px; overflow: hidden; margin-top: 4px; }
+  .bar > div { height: 100%; background: var(--accent); }
+</style>
+</head>
+<body>
+  <h1>Project Relay</h1>
+  <div class="row"><button id="dashboard">Open Relay ADE dashboard (pinned tab)</button></div>
+  <div id="daemon" class="muted">Checking prelayd…</div>
+  <div id="runtimes"></div>
+
+  <div class="card">
+    <div class="row"><label for="project">Project</label><select id="project"></select></div>
+    <div class="row">
+      <label><input type="radio" name="chat" value="this" checked> This chat</label>
+      <label><input type="radio" name="chat" value="new"> New chat</label>
+    </div>
+    <div id="chat-hint" class="muted"></div>
+    <label for="seed">First message (optional)</label>
+    <textarea id="seed" placeholder="Default: continue from the current plan in this chat."></textarea>
+    <div class="row"><label for="max">Max cycles</label><input id="max" type="number" min="1" value="50" style="width:80px"></div>
+    <div class="row"><button id="start">Start in this tab</button></div>
+  </div>
+  <div id="error" class="err"></div>
+  <script src="popup.js"></script>
+</body>
+</html>

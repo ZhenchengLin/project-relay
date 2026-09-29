@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "Project Relay",
+  "version": "2.1.0",
+  "description": "Relay ADE: Claude plans, ChatGPT writes one Bash block, your Mac runs it, the evidence goes back.",
+  "permissions": [
+    "storage",
+    "debugger"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "https://chatgpt.com/*",
+    "https://claude.ai/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://claude.ai/*"
+      ],
+      "js": [
+        "relay-core.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Project Relay",
+    "default_popup": "popup.html"
+  }
+}

@@ -1,0 +1,151 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Claude (Project Relay mock)</title>
+<style>
+  body { font: 14px sans-serif; margin: 0; padding: 16px 16px 150px; }
+  [data-testid="user-message"] { background: #f3efe6; padding: 6px; margin: 8px 0; }
+  [data-is-streaming] { padding: 6px 0; border-bottom: 1px solid #ddd; }
+  fieldset { position: fixed; bottom: 0; left: 0; right: 0; background: #fff; padding: 12px; display: flex; gap: 8px; border: 0; }
+  .ProseMirror { flex: 1; min-height: 40px; border: 1px solid #999; padding: 6px; white-space: pre-wrap; }
+  pre { background: #222; color: #eee; padding: 8px; }
+</style>
+</head>
+<body>
+<!-- Mirrors the claude.ai markers Relay's CLAUDE profile relies on:
+     [data-testid="user-message"], assistant wrappers with data-is-streaming,
+     .font-claude-response reply roots, a ProseMirror composer, and
+     "Send message" / "Stop response" buttons. The user message appears
+     optimistically before the server answers, like the real site. -->
+<main id="thread"></main>
+<fieldset>
+  <div class="ProseMirror" contenteditable="true" role="textbox"></div>
+  <button aria-label="Send message" disabled>↑</button>
+  <button aria-label="Stop response" hidden>■</button>
+</fieldset>
+<script>
+(() => {
+  const FENCE = "`".repeat(3);
+  const KEY = "mock-claude-convs";
+  const load = () => JSON.parse(localStorage.getItem(KEY) || "{}");
+  const save = (v) => localStorage.setItem(KEY, JSON.stringify(v));
+  const $ = (s) => document.querySelector(s);
+  const composer = $(".ProseMirror");
+  const send = $('[aria-label="Send message"]');
+  const stop = $('[aria-label="Stop response"]');
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const convId = () => (/^\/chat\/([0-9a-f-]+)/.exec(location.pathname) || [])[1] || null;
+
+  function markdown(text) {
+    const box = document.createElement("div");
+    box.className = "font-claude-response";
+    const parts = text.split(new RegExp(FENCE + "(\\w*)\\n([\\s\\S]*?)" + FENCE, "g"));
+    for (let i = 0; i < parts.length; i += 3) {
+      for (const para of parts[i].trim() ? parts[i].trim().split(/\n{2,}/) : []) {
+        const p = document.createElement("p");
+        p.style.whiteSpace = "pre-wrap";
+        p.textContent = para;
+        box.append(p);
+      }
+      if (i + 2 < parts.length) {
+        const pre = document.createElement("pre");
+        const code = document.createElement("code");
+        if (parts[i + 1]) code.className = "language-" + parts[i + 1];
+        code.textContent = parts[i + 2].replace(/\n$/, "");
+        pre.append(code);
+        box.append(pre);
+      }
+    }
+    return box;
+  }
+
+  function userEl(text) {
+    const u = document.createElement("div");
+    u.setAttribute("data-testid", "user-message");
+    u.textContent = text;
+    return u;
+  }
+
+  function assistantEl(text, streaming) {
+    const a = document.createElement("div");
+    a.setAttribute("data-is-streaming", streaming ? "true" : "false");
+    a.append(markdown(text));
+    if (!streaming) a.append(actionBar());
+    return a;
+  }
+
+  function actionBar() {
+    const bar = document.createElement("div");
+    bar.setAttribute("data-testid", "action-bar");
+    for (const label of ["Copy", "Retry", "Good response", "Bad response"]) {
+      const b = document.createElement("button");
+      b.setAttribute("aria-label", label);
+      if (label === "Copy") b.setAttribute("data-testid", "action-bar-copy");
+      bar.append(b);
+    }
+    return bar;
+  }
+
+  function render() {
+    const thread = $("#thread");
+    thread.replaceChildren();
+    const conv = load()[convId()];
+    if (!conv) return;
+    for (const turn of conv.turns) {
+      thread.append(userEl(turn.user));
+      if (turn.assistant != null) thread.append(assistantEl(turn.assistant, false));
+    }
+  }
+
+  composer.addEventListener("input", () => { send.disabled = !composer.innerText.trim(); });
+
+  send.addEventListener("click", async () => {
+    const prompt = composer.innerText;
+    if (!prompt.trim()) return;
+    composer.textContent = "";
+    send.disabled = true;
+    stop.hidden = false;
+    const optimistic = userEl(prompt);
+    $("#thread").append(optimistic);
+
+    const res = await fetch("/__mock/reply", { method: "POST", body: JSON.stringify({ prompt, site: "claude", path: location.pathname }) });
+    const plan = await res.json();
+    await sleep(plan.acceptDelayMs ?? 700);
+
+    const convs = load();
+    let id = convId();
+    if (!id) {
+      id = crypto.randomUUID();
+      convs[id] = { turns: [] };
+      history.pushState({}, "", "/chat/" + id);
+    }
+    const turn = { user: prompt, assistant: null };
+    convs[id].turns.push(turn);
+    save(convs);
+
+    // Server started answering: the reply container appears, still streaming.
+    const a = document.createElement("div");
+    a.setAttribute("data-is-streaming", "true");
+    $("#thread").append(a);
+    await sleep(plan.thinkMs ?? 1500);
+    const text = plan.text || "";
+    const chunks = Math.max(1, Math.ceil(text.length / 40));
+    for (let i = 1; i <= chunks; i++) {
+      a.replaceChildren(markdown(text.slice(0, Math.ceil((text.length * i) / chunks))));
+      await sleep(60);
+    }
+    a.setAttribute("data-is-streaming", "false");
+    a.append(actionBar());
+    stop.hidden = true;
+    const saved = load();
+    saved[id].turns[saved[id].turns.length - 1].assistant = text;
+    save(saved);
+  });
+
+  window.addEventListener("popstate", render);
+  render();
+})();
+</script>
+</body>
+</html>

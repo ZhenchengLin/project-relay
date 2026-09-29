@@ -1,0 +1,13 @@
+{
+  "name": "project-relay-js-tests",
+  "private": true,
+  "type": "module",
+  "description": "Unit tests for the Project Relay extension logic and the browser end-to-end harness",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test ./*.test.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "1.63.0"
+  }
+}
