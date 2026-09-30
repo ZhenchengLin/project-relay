@@ -141,6 +141,8 @@ def routes(engine: RelayEngine) -> dict[tuple[str, str], Callable[[dict[str, Any
         ("POST", "/v2/browser/complete"): lambda b: engine.complete(
             lease=b["lease"], request_id=b["request_id"], assistant_turn_id=b["assistant_turn_id"],
             text=b["text"]),
+        ("POST", "/v2/browser/alive"): lambda b: engine.alive(
+            lease=str(b.get("lease") or ""), page_url=b.get("page_url"), project=b.get("project") or None),
         ("POST", "/v2/browser/diag"): lambda b: engine.diag(
             lease=b["lease"], request_id=b["request_id"], stage=str(b.get("stage") or ""),
             probe=b.get("probe") if isinstance(b.get("probe"), dict) else {}),

@@ -38,6 +38,9 @@ from .urls import ROLE_SITE, canonical_conversation_url, conversation_id, is_new
 
 PROVISIONAL_USER_TURN = "group:user:pending-chatgpt-submit"
 LEASE_TTL_SECONDS = 45.0
+# A run whose current step needs a Claude/ChatGPT tab reports "no tab" after this
+# much silence from every tab that could serve it (tabs send a heartbeat every 20 s).
+TAB_SILENT_SECONDS = 90.0
 
 BROWSER_STATES = frozenset(
     {"QUEUED", "PREPARING_BROWSER", "READY_TO_SUBMIT", "SUBMITTING",
@@ -111,6 +114,8 @@ class RelayEngine:
         self.git = git
         self.clock = clock
         self._lease_seen: dict[str, float] = {}
+        self._tab_seen: dict[tuple[str, str], float] = {}  # (site, project or "*") -> last heard
+        self._started = clock()
         self._executing: set[str] = set()
         self._stop = threading.Event()
         self._wake = threading.Event()
@@ -281,6 +286,7 @@ class RelayEngine:
                     "mode": rt["mode"],
                     "goal": rt["goal"],
                     "review_policy": rt["review_policy"],
+                    "missing_tab": self.missing_tab(rt, last),
                     "model_mode": rt["model_mode"],
                     "cycle_count": rt["cycle_count"],
                     "max_cycles": rt["max_cycles"],
@@ -335,11 +341,42 @@ class RelayEngine:
         seen = self._lease_seen.get(lease or "")
         return seen is not None and self.clock() - seen < LEASE_TTL_SECONDS
 
+    def _heard(self, lease: str, page_url: str | None, project: str | None) -> None:
+        now = self.clock()
+        self._lease_seen[lease] = now
+        self._tab_seen[(site_of(page_url) or "chatgpt", project or "*")] = now
+
+    def alive(self, *, lease: str, page_url: str | None = None, project: str | None = None) -> dict[str, Any]:
+        """Heartbeat from a Relay tab, sent even while it is busy with a long step."""
+        if not lease:
+            raise RelayRefused("lease required")
+        with self.lock:
+            self._heard(lease, page_url, project)
+        return {"ok": True}
+
+    def missing_tab(self, rt: dict[str, Any], req: dict[str, Any] | None) -> dict[str, Any] | None:
+        """The tab a running step is waiting for, when no tab that could serve it is connected."""
+        if rt["status"] != "RUNNING" or not req or req["state"] not in BROWSER_STATES:
+            return None
+        now = self.clock()
+        if now - self._started < TAB_SILENT_SECONDS:
+            return None
+        site = ROLE_SITE.get(req["role"], "chatgpt")
+        heard = [t for (tab_site, project), t in self._tab_seen.items()
+                 if tab_site == site and project in {rt["project_name"], "*"}]
+        if req["browser_lease"] in self._lease_seen:
+            heard.append(self._lease_seen[req["browser_lease"]])
+        last = max(heard, default=None)
+        if last is not None and now - last < TAB_SILENT_SECONDS:
+            return None
+        return {"role": req["role"], "site": site,
+                "silent_seconds": None if last is None else int(now - last)}
+
     def poll(self, *, lease: str, page_url: str | None = None, project: str | None = None) -> dict[str, Any]:
         if not lease:
             raise RelayRefused("lease required")
         with self.lock:
-            self._lease_seen[lease] = self.clock()
+            self._heard(lease, page_url, project)
             role = "pm" if site_of(page_url) == "claude" else "worker"
             with self.db.transaction() as conn:
                 found = self._browser_request(conn, project, role)
@@ -385,6 +422,7 @@ class RelayEngine:
                 for r in store.all_runtimes(conn)]
 
     def _owned(self, conn, lease: str, request_id: str, states: set[str]) -> dict[str, Any]:
+        self._lease_seen[lease] = self.clock()
         req = store.get_request(conn, request_id)
         if req["browser_lease"] != lease:
             raise RelayRefused("This tab does not own the request.")
@@ -513,6 +551,7 @@ class RelayEngine:
     def diag(self, *, lease: str, request_id: str, stage: str, probe: dict[str, Any]) -> dict[str, Any]:
         """Store a structural DOM probe from the extension (bounded per request)."""
         with self.lock, self.db.transaction() as conn:
+            self._lease_seen[lease] = self.clock()
             req = store.get_request(conn, request_id)
             if req["browser_lease"] != lease:
                 raise RelayRefused("This tab does not own the request.")

@@ -2,7 +2,8 @@
 Supervisor: watches every run from inside prelayd.
 
 - Alerts (desktop notification + SUPERVISOR_ALERT event) when a run starts
-  needing you, pauses, finishes, or stalls (no activity for stall_minutes).
+  needing you, pauses, finishes, stalls (no activity for stall_minutes), or
+  waits for a Claude/ChatGPT tab that is not open or not connected.
 - Daily message budgets per role (Claude PM, ChatGPT worker/solo): reaching
   one pauses the runs that would send more.
 - Quiet hours: no new messages are sent (replies in progress are still
@@ -93,6 +94,7 @@ class Supervisor:
         self.local_now = local_now
         self._seen: dict[str, str] = {}
         self._stalled: set[str] = set()
+        self._no_tab: set[str] = set()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -136,6 +138,14 @@ class Supervisor:
                 if not first_pass and previous != status and status in ALERT_STATUSES:
                     alerts.append(self._alert(conn, rt, f"{name} {ALERT_STATUSES[status]}"
                                               + (f": {rt['reason']}" if rt.get("reason") else "")))
+                missing = self._missing_tab(conn, rt) if status == "RUNNING" else None
+                if missing and name not in self._no_tab:
+                    self._no_tab.add(name)
+                    site = "Claude" if missing["site"] == "claude" else "ChatGPT"
+                    alerts.append(self._alert(conn, rt, f"{name} is waiting for a {site} tab, but none is "
+                                              "connected. Open the dashboard and click Arrange windows."))
+                elif not missing:
+                    self._no_tab.discard(name)
                 stalled = self._is_stalled(conn, rt) if status == "RUNNING" else False
                 if stalled and name not in self._stalled:
                     self._stalled.add(name)
@@ -158,6 +168,12 @@ class Supervisor:
         if chatgpt and used["chatgpt"] >= chatgpt:
             hit["worker"] = f"ChatGPT {used['chatgpt']}/{chatgpt}"
         return hit
+
+    def _missing_tab(self, conn, rt: dict[str, Any]) -> dict[str, Any] | None:
+        check = getattr(self.engine, "missing_tab", None)
+        if check is None or not rt.get("session_id"):
+            return None
+        return check(rt, store.latest_request(conn, rt["session_id"]))
 
     def _is_stalled(self, conn, rt: dict[str, Any]) -> bool:
         minutes = float(self.cfg.get("stall_minutes") or 0)

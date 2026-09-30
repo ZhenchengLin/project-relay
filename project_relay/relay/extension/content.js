@@ -133,6 +133,7 @@
     busyWaitMs: 15 * 60 * 1000, // the chat is still generating when Relay arrives to send
     trace: false,               // tests: keep a status trace in sessionStorage
     probeEveryMs: 20000,        // diagnostics while waiting for a reply
+    aliveEveryMs: 20000,        // heartbeat, so the dashboard knows this tab is still here
     pollMs: 4000,
     completion: {},             // stoppedMs / stableMs / fallbackStableMs
   };
@@ -162,6 +163,7 @@
     port.onMessage.addListener(() => {
       for (const waiter of [...tickWaiters]) waiter();
       try { port.postMessage({ type: "tock" }); } catch (_) {}
+      heartbeat();
       if (active && !busy) run();
     });
     port.onDisconnect.addListener(() => {
@@ -201,6 +203,20 @@
   }
 
   const post = (path, body) => api("POST", path, { lease, ...body });
+
+  // Sent even while a long step (waiting for a reply) keeps the loop busy.
+  let lastAlive = 0;
+  function heartbeat() {
+    if (!active || Date.now() - lastAlive < T.aliveEveryMs) return;
+    lastAlive = Date.now();
+    post("/v2/browser/alive", { page_url: location.href, project: sessionStorage.getItem(PROJECT_KEY) || null })
+      .then((res) => { if (orphaned(res)) setStatus(ORPHANED); });
+  }
+
+  // After the extension is reloaded or updated, scripts in tabs that were
+  // already open can no longer reach it; only reloading the page fixes that.
+  const ORPHANED = "Project Relay was updated or reloaded. Reload this tab (⌘R / Ctrl+R) to reconnect; nothing is re-sent.";
+  const orphaned = (res) => res && res.status === 0 && /context invalidated/i.test(String(res.data?.error || ""));
 
   async function fail(job, code, message, evidence) {
     setStatus(`${code}: ${message || ""}`);
@@ -952,7 +968,8 @@
       const project = sessionStorage.getItem(PROJECT_KEY) || null;
       const res = await post("/v2/browser/poll", { page_url: location.href, project });
       if (!res.ok) {
-        setStatus(res.status === 0 ? "prelayd is not running (prelay daemon)" : `daemon: ${res.data.error}`);
+        setStatus(orphaned(res) ? ORPHANED
+          : res.status === 0 ? "prelayd is not running (prelay daemon)" : `daemon: ${res.data.error}`);
         return;
       }
       const job = res.data;
@@ -1044,6 +1061,6 @@
 
   buildPanel();
   connect();
-  timingReady.then(() => setInterval(() => { if (active && !busy) run(); }, T.pollMs));
+  timingReady.then(() => setInterval(() => { heartbeat(); if (active && !busy) run(); }, T.pollMs));
   if (active) run();
 })();

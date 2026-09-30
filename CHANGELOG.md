@@ -1,3 +1,14 @@
+## 2.2.2 — Know when a chat tab is missing
+
+- Relay tabs send a heartbeat every 20 s, even during a long step. When a
+  run's current step needs a Claude or ChatGPT tab and none that could serve
+  it has been heard from for 90 s (closed, unloaded by Chrome, or cut off by
+  an extension reload), the dashboard card turns amber and says which tab to
+  open, `prelay status` prints it, and the supervisor sends one alert.
+- A tab whose script lost the extension after a reload/update now says
+  "reload this tab" instead of "prelayd is not running".
+- API: `POST /v2/browser/alive`; `missing_tab` in `/v2/status`.
+
 ## 2.2.1 — Dashboard for long goals
 
 - Run cards fold the goal to its first line with its size (lines · chars);

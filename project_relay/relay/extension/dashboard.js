@@ -39,6 +39,11 @@ function stepText(rt) {
     HUMAN_REQUIRED: "Waiting for you.",
   }[rt.status];
   if (statusText) return statusText;
+  if (rt.missing_tab) {
+    const site = rt.missing_tab.site === "claude" ? "Claude (claude.ai)" : "ChatGPT (chatgpt.com)";
+    return `Waiting for a ${site} tab: none is connected. Click Arrange windows to open it`
+      + ` (or reload the tab if it is open). Nothing is re-sent.`;
+  }
   if (!req) return "Starting…";
   const s = req.state;
   if (req.kind === "HANDOFF") return `${who}'s chat is getting long: writing a handoff for a fresh chat.`;
@@ -242,7 +247,7 @@ async function runCard(rt) {
     if (!needsMessage && !confirm(`Resume ${rt.project}?`)) return;
     control("resume", rt.project, message ? { message } : {});
   };
-  const card = el("div", { class: `panel card st-${rt.status}` },
+  const card = el("div", { class: `panel card st-${rt.missing_tab ? "HUMAN_REQUIRED" : rt.status}` },
     el("div", { class: "head" },
       el("div", {},
         el("div", { class: "title" },

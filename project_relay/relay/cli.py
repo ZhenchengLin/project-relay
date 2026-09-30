@@ -197,6 +197,11 @@ def _print_status(runtimes: list[dict[str, Any]]) -> None:
         if req:
             print(f"  request {req['id']} {req['kind']} {req['state']}"
                   + (f" model={req['model']}" if req.get("model") else ""))
+        missing = rt.get("missing_tab")
+        if missing:
+            site = "Claude (claude.ai)" if missing["site"] == "claude" else "ChatGPT (chatgpt.com)"
+            print(f"  ! waiting for a {site} tab, but none is connected: open the dashboard and click "
+                  "Arrange windows (or reload the tab). Nothing is re-sent.")
 
 
 def cmd_status(args: Any) -> int:
