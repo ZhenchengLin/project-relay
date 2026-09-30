@@ -98,6 +98,7 @@ prelay ade myapp --goal "Get the test suite green" --rules "Never push. Never to
 | `prelay log myapp` | Event log (add `--verbose` for browser diagnostics) |
 | `prelay pause myapp` / `prelay resume myapp [--message "…"]` / `prelay stop myapp` | Control a run |
 | `prelay start myapp --url https://chatgpt.com/c/…` | Solo mode in an existing ChatGPT chat (or `--new-chat --seed "…"`) |
+| `prelay notes myapp [--add "…" \| --remove ID]` | Show/edit the project's memory and see its plan |
 | `prelay doctor` | Check the installation |
 | `prelay models --local-llm NAME --logic-model NAME` | Choose the Ollama judge models |
 | `prelay daemon` / `prelay stop-daemon` | Start/stop `prelayd` (e.g. after a reboot) |
@@ -109,6 +110,27 @@ prelay ade myapp --goal "Get the test suite green" --rules "Never push. Never to
 | `risky` (default) | commits, pushes, merges, deletes, moves, permission changes, package installs, `curl … \| sh`, scripts over 200 lines |
 | `always` | every command (safest, uses the most Claude messages) |
 | `never` | nothing (the PM still sees every result) |
+
+## Supervisor, memory, plan and KPIs
+
+- **Alerts.** `prelayd` sends a desktop notification (macOS Notification
+  Center, or `notify-send` on Linux) when a run needs you, pauses, finishes,
+  or has had no activity for `stall_minutes`. Alerts also appear in the
+  dashboard timeline.
+- **Budgets and quiet hours.** Cap how many messages Relay sends to Claude and
+  ChatGPT per day (runs pause when a cap is reached), and set hours when Relay
+  sends nothing new (replies in progress and commands still finish).
+- **Project memory.** Facts a project must never forget. The PM (or the solo
+  chat) writes `RELAY_NOTE: …` lines; you add or remove notes in the dashboard
+  or with `prelay notes myapp --add "…"` / `--remove ID`. Active notes are put
+  into every new chat, so automatic chat rollovers keep them.
+- **Plan.** The PM keeps a checklist in a `RELAY_PLAN` block
+  (`- [ ] T1 …`, `[x]` done, `[~]` in progress, `[!]` blocked); the dashboard
+  shows progress.
+- **KPIs.** Each run card shows commands run, success rate, commands per hour,
+  average command time, loops caught, PM approvals and revisions, messages sent
+  to Claude and ChatGPT, chat rollovers and time since the last activity.
+  `prelay status` prints a one-line summary.
 
 ## Safety
 
@@ -154,6 +176,13 @@ committed working tree, and give the PM explicit rules.
     "evidence_max_chars": 12000,
     "models": { "default_label": "", "strong_label": "Thinking" }
   },
+  "supervisor": {
+    "notifications": true,
+    "stall_minutes": 25,
+    "claude_daily_messages": 0,
+    "chatgpt_daily_messages": 0,
+    "quiet_hours": "23:00-07:00"
+  },
   "watchdog": {
     "ollama_url": "http://127.0.0.1:11434",
     "voters": [
@@ -164,6 +193,7 @@ committed working tree, and give the PM explicit rules.
 }
 ```
 
+Budgets of `0` mean unlimited; an empty `quiet_hours` disables quiet hours.
 `models.*_label` apply to solo mode: when the judges detect a loop, Relay
 switches ChatGPT's model picker to `strong_label`.
 

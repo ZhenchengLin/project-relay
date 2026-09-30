@@ -1,3 +1,14 @@
+## 2.2.0 — Supervisor, memory, plan, KPIs
+
+- Supervisor inside prelayd: desktop alerts when a run needs you, pauses,
+  finishes or stalls; daily Claude/ChatGPT message budgets; quiet hours.
+- Project memory: `RELAY_NOTE:` lines from the PM (or solo chat) and notes you
+  add are injected into every kickoff, handoff and fresh chat
+  (`prelay notes`, dashboard).
+- Plan: the PM's `RELAY_PLAN` checklist, with progress in the dashboard.
+- KPIs per run in the dashboard and `prelay status`.
+- Schema v4 (project_notes, plan_tasks); API `/v2/notes`, `/v2/supervisor`.
+
 ## 2.1.2
 
 - Fix: if the chat is still generating when Relay arrives to send (Stop shown

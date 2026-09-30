@@ -4,6 +4,7 @@
 
 const $ = (id) => document.getElementById(id);
 const lastEventId = {};
+const notesOpen = {};
 const timelines = {};
 
 function api(method, path, body) {
@@ -87,6 +88,10 @@ function eventLine(e) {
     case "CONVERSATION_STARTED": return `New ${p.role === "pm" ? "Claude" : "ChatGPT"} chat${p.url ? "" : " (will open fresh)"}.`;
     case "CONVERSATION_RETIRED": return `Chat retired (${p.reason}).`;
     case "RECOVERY_SUCCESSOR": return `Recovered from ${p.code} with a new request.`;
+    case "SUPERVISOR_ALERT": return `⚑ ${p.message}`;
+    case "NOTE_ADDED": return `Remembered (${p.source}): ${p.text}`;
+    case "NOTE_REMOVED": return `Forgot note #${p.id}.`;
+    case "PLAN_UPDATED": return `Plan updated: ${p.done}/${p.tasks} done.`;
     default: return null;
   }
 }
@@ -135,8 +140,65 @@ function arrange(rt) {
   }, () => void chrome.runtime.lastError);
 }
 
+function tile(value, label) {
+  return el("div", { class: "tile" }, el("div", { class: "v" }, value), el("div", { class: "k" }, label));
+}
+
+function kpiTiles(k) {
+  if (!k || !k.started_at) return null;
+  const pct = (x) => (x === null || x === undefined ? "—" : `${Math.round(x * 100)}%`);
+  const idle = k.idle_seconds === null ? "—" : k.idle_seconds < 90 ? `${k.idle_seconds}s`
+    : k.idle_seconds < 5400 ? `${Math.round(k.idle_seconds / 60)}m` : `${Math.round(k.idle_seconds / 3600)}h`;
+  return el("div", { class: "kpis" },
+    tile(String(k.commands), "commands run"),
+    tile(pct(k.success_rate), "succeeded (exit 0)"),
+    tile(k.commands_per_hour === null ? "—" : String(k.commands_per_hour), "commands / hour"),
+    tile(k.avg_command_seconds === null ? "—" : `${k.avg_command_seconds}s`, "avg command time"),
+    tile(String(k.loops_caught), "loops caught"),
+    tile(k.reviews ? `${k.approved}/${k.reviews}` : "—", `PM approvals (${k.revised} revised)`),
+    tile(`${k.messages.pm} · ${k.messages.worker}`, "sent to Claude · ChatGPT"),
+    tile(String(k.rollovers), "chat rollovers"),
+    tile(idle, "since last activity"));
+}
+
+function planView(rt) {
+  const tasks = rt.plan || [];
+  if (!tasks.length) return null;
+  const done = tasks.filter((t) => t.status === "done").length;
+  const mark = { done: "✓", doing: "▸", blocked: "!", todo: "○" };
+  return el("div", { class: "plan" },
+    el("p", { class: "muted" }, `Plan · ${done}/${tasks.length} done`),
+    el("div", { class: "bar" }, el("div", { style: `width:${Math.round((100 * done) / tasks.length)}%` })),
+    ...tasks.map((t) => el("div", { class: `st-${t.status}` }, `${mark[t.status] || "○"} ${t.task_key} ${t.title}`)));
+}
+
+async function notesView(rt) {
+  const res = await api("GET", `/v2/notes?project=${encodeURIComponent(rt.project)}`);
+  const notes = res.ok ? res.data.notes : [];
+  const add = async () => {
+    const text = prompt(`Something ${rt.project} must always remember:`);
+    if (text && text.trim()) {
+      await api("POST", "/v2/notes/add", { project: rt.project, text: text.trim() });
+      refresh();
+    }
+  };
+  const remove = async (note) => {
+    if (!confirm(`Forget: “${note.text}”?`)) return;
+    await api("POST", "/v2/notes/remove", { project: rt.project, id: note.id });
+    refresh();
+  };
+  const box = el("details", { class: "notes", ...(notesOpen[rt.project] ? { open: "" } : {}) },
+    el("summary", {}, `Project memory (${notes.length})`),
+    ...notes.map((n) => el("div", {}, `• ${n.text} `, el("span", { class: "muted" }, `(${n.source})`),
+      el("button", { onclick: () => remove(n), title: "Forget this" }, "×"))),
+    el("button", { onclick: add }, "Add note…"));
+  box.addEventListener("toggle", () => { notesOpen[rt.project] = box.open; });
+  return box;
+}
+
 async function runCard(rt) {
   const events = await loadTimeline(rt.project);
+  const notes = await notesView(rt);
   const exec = rt.last_execution;
   const card = el("div", { class: "panel card" },
     el("div", { class: "head" },
@@ -146,6 +208,8 @@ async function runCard(rt) {
       el("span", { class: "muted" }, `command ${rt.cycle_count} of ${rt.max_cycles}`
         + (rt.mode === "ade" ? ` · review: ${rt.review_policy}` : ""))),
     el("div", { class: "step" }, stepText(rt)),
+    kpiTiles(rt.kpi),
+    planView(rt),
     rt.reason && rt.status !== "RUNNING"
       ? el("p", { class: rt.status === "FINISHED" || rt.status === "STOPPED" ? "muted" : "error" }, rt.reason)
       : null,
@@ -154,6 +218,7 @@ async function runCard(rt) {
       rt.mode === "ade" ? [el("span", { class: "muted" }, "PM (Claude)"), chatLink(rt.pm_conversation, "Claude")] : [],
       [el("span", { class: "muted" }, rt.mode === "ade" ? "Worker (ChatGPT)" : "ChatGPT"), chatLink(rt.conversation, "ChatGPT")],
       [el("span", { class: "muted" }, "Repository"), el("code", {}, rt.root)]),
+    notes,
     exec ? el("div", {},
       el("p", { class: "muted" }, `Last command · ${exec.completed_at ? "exit " + exec.return_code : "running…"}`),
       el("pre", {}, exec.command_head)) : null,
@@ -191,6 +256,15 @@ async function refresh() {
   }
   $("daemon").textContent = "prelayd running";
   $("daemon").className = "badge ok";
+  const sup = await api("GET", "/v2/supervisor");
+  if (sup.ok && sup.data.enabled) {
+    const s = sup.data;
+    const cap = (used, max) => (max ? `${used}/${max}` : `${used}`);
+    $("supervisor").textContent = `Supervisor: ${s.quiet ? "quiet hours now — no new messages" : "watching"}`
+      + ` · today sent to Claude ${cap(s.sends_today.claude, s.budget.claude)}`
+      + `, ChatGPT ${cap(s.sends_today.chatgpt, s.budget.chatgpt)}`
+      + (s.quiet_hours ? ` · quiet hours ${s.quiet_hours}` : "");
+  }
   const runtimes = status.data.runtimes.filter((rt) => rt.status !== "STOPPED" || timelines[rt.project]);
   const cards = await Promise.all(runtimes.map(runCard));
   $("runs").replaceChildren(...(cards.length ? cards : [el("p", { class: "muted" }, "No runs yet. Start one below.")]));

@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -186,6 +187,13 @@ def _print_status(runtimes: list[dict[str, Any]]) -> None:
         print(f"  cycles {rt['cycle_count']}/{rt['max_cycles']}  model {rt['model_mode'].lower()}"
               f"  chat #{conv.get('chat_number')} {conv.get('url') or '(new chat)'}"
               f"  length {conv.get('char_count', 0)}/{conv.get('budget', '?')}")
+        k = rt.get("kpi") or {}
+        if k.get("commands"):
+            rate = k.get("success_rate")
+            print(f"  run: {k['commands']} commands, {round((rate or 0) * 100)}% ok, "
+                  + (f"{k['commands_per_hour']}/h, " if k.get("commands_per_hour") else "")
+                  + f"loops caught {k['loops_caught']}, rollovers {k['rollovers']}"
+                  + (f", plan {k['plan']['done']}/{k['plan']['total']}" if k.get("plan", {}).get("total") else ""))
         if req:
             print(f"  request {req['id']} {req['kind']} {req['state']}"
                   + (f" model={req['model']}" if req.get("model") else ""))
@@ -209,6 +217,25 @@ def cmd_control(args: Any) -> int:
         body["message"] = args.message
     call("POST", f"/v2/control/{args.action}", body, port=args.port)
     print(f"{args.project}: {args.action} ok")
+    return 0
+
+
+def cmd_notes(args: Any) -> int:
+    if args.add:
+        call("POST", "/v2/notes/add", {"project": args.project, "text": args.add}, port=args.port)
+    if args.remove is not None:
+        call("POST", "/v2/notes/remove", {"project": args.project, "id": args.remove}, port=args.port)
+    data = call("GET", f"/v2/notes?project={urllib.parse.quote(args.project)}", port=args.port)
+    print(f"Project memory for {args.project}:")
+    for note in data["notes"] or []:
+        print(f"  #{note['id']:<4} {note['text']}  ({note['source']})")
+    if not data["notes"]:
+        print("  (none)")
+    if data["plan"]:
+        marks = {"done": "x", "doing": "~", "blocked": "!", "todo": " "}
+        print("Plan:")
+        for task in data["plan"]:
+            print(f"  [{marks.get(task['status'], ' ')}] {task['task_key']} {task['title']}")
     return 0
 
 
@@ -355,6 +382,12 @@ def add_commands(sub: Any) -> None:
         if action == "resume":
             p.add_argument("--message", help="Message to send to ChatGPT when resuming after a stop.")
         p.set_defaults(func=cmd_control, action=action)
+
+    p = rs.add_parser("notes", help="Show, add or remove a project's memory notes (and see its plan).")
+    p.add_argument("project")
+    p.add_argument("--add", metavar="TEXT", help="Remember this fact in every future chat.")
+    p.add_argument("--remove", metavar="ID", type=int, help="Forget note #ID.")
+    p.set_defaults(func=cmd_notes)
 
     p = rs.add_parser("log", help="Recent Relay events for a project.")
     p.add_argument("project")

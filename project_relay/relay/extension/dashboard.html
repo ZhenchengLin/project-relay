@@ -72,6 +72,15 @@
   .timeline time { color: var(--muted); margin-right: 8px; font-variant-numeric: tabular-nums; }
   .error { color: var(--bad); white-space: pre-wrap; }
   .two { display: grid; gap: 12px; grid-template-columns: 1fr 1fr; }
+  .kpis { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); margin: 10px 0; }
+  .tile { border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; }
+  .tile .v { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .tile .k { font-size: 11px; color: var(--muted); }
+  .plan, .notes { font-size: 13px; margin: 6px 0; }
+  .plan div, .notes div { padding: 1px 0; }
+  .st-done { color: var(--ok); } .st-doing { color: var(--accent); } .st-blocked { color: var(--bad); }
+  .notes button { padding: 0 6px; font-size: 11px; margin-left: 6px; }
+  #supervisor { margin-top: 6px; font-size: 13px; }
   @media (max-width: 720px) { .two { grid-template-columns: 1fr; } }
 </style>
 </head>
@@ -84,6 +93,7 @@
     </div>
     <div id="daemon" class="badge">checking prelayd…</div>
   </div>
+  <div id="supervisor" class="muted"></div>
 
   <h2>Runs</h2>
   <div id="runs"><p class="muted">Loading…</p></div>
@@ -144,6 +154,13 @@
           <li><b>risky</b> (default): the PM must approve commits, pushes, merges, deletes, moves, permission changes, package installs, <code>curl | sh</code> and scripts over 200 lines.</li>
           <li><b>always</b>: every command. Safest, uses the most Claude messages.</li>
           <li><b>never</b>: no pre-run review; the PM still sees every result.</li>
+        </ul>
+        <h2>Supervisor, memory and plan</h2>
+        <ul class="tight">
+          <li><b>Alerts</b>: a desktop notification when a run needs you, pauses, finishes, or has been idle too long.</li>
+          <li><b>Budgets and quiet hours</b> (<code>supervisor</code> in <code>config.json</code>): daily Claude/ChatGPT message caps, and hours when Relay sends nothing new.</li>
+          <li><b>Memory</b>: facts the project must never forget (<code>RELAY_NOTE:</code> from the PM, or added here); they go into every new chat, so rollovers keep them.</li>
+          <li><b>Plan</b>: the PM keeps a <code>RELAY_PLAN</code> checklist; progress shows on each run.</li>
         </ul>
         <h2>Tips</h2>
         <ul class="tight">

@@ -31,11 +31,14 @@ function planPm(prompt) {
     return { text: "The command only adds and commits hello.txt.\n\nRELAY_APPROVE" };
   }
   if (prompt.includes("Result of the Worker's command") && prompt.includes("add hello")) {
-    return { text: "The commit is in the log. Goal met.\n\nRELAY_DONE" };
+    return { text: "The commit is in the log. Goal met.\n\nRELAY_PLAN\n- [x] T1 Create hello.txt\n- [x] T2 Commit it\n"
+      + "END_RELAY_PLAN\n\nRELAY_DONE" };
   }
   if (prompt.includes("Project Relay ADE is starting")) {
     return {
-      text: "Plan: one small commit.\n\nRELAY_TASK\nCreate hello.txt containing the word hello, "
+      text: "Plan: one small commit.\n\nRELAY_NOTE: commit only the files a task names\n\n"
+        + "RELAY_PLAN\n- [~] T1 Create hello.txt\n- [ ] T2 Commit it\nEND_RELAY_PLAN\n\n"
+        + "RELAY_TASK\nCreate hello.txt containing the word hello, "
         + "commit only that file with the message 'add hello', then print git log -1 --oneline.\nEND_RELAY_TASK",
     };
   }

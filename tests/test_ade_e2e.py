@@ -21,6 +21,7 @@ from project_relay.relay import store
 from project_relay.relay.cli import EXTENSION_FILES, EXTENSION_SOURCE
 from project_relay.relay.engine import RelayEngine
 from project_relay.relay.server import make_handler
+from project_relay.relay.supervisor import Supervisor
 from project_relay.storage.database import RelayDatabase
 
 JS_DIR = Path(__file__).resolve().parent / "js"
@@ -46,6 +47,7 @@ def test_ade_end_to_end(tmp_path):
 
     db = RelayDatabase(tmp_path / "relay.db", check_same_thread=False)
     engine = RelayEngine(db, config={}, judge=judge)
+    engine.supervisor = Supervisor(engine, {"supervisor": {"notifications": False}})
     token = "e2e-token"
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(engine, token))
     port = httpd.server_address[1]
@@ -120,5 +122,10 @@ def test_ade_end_to_end(tmp_path):
     assert "Relay ADE" in text and "demo" in text and "Finished" in text and "prelayd running" in text
     assert "Sent (exactly once)." in text and "PM approved the command." in text  # timeline
     assert "chat #1" in text and "chat #2" not in text
+    # Memory, plan, KPIs and the supervisor bar.
+    assert "Project memory (1)" in text and "Plan · 2/2 done" in text
+    assert "commands run" in text and "PM approvals" in text and "Supervisor: watching" in text
+    notes = [n["text"] for n in db.conn.execute("SELECT text FROM project_notes WHERE active = 1")]
+    assert notes == ["commit only the files a task names"]
     shutil.copy(tmp_path / "dashboard.png", os.environ.get("RELAY_E2E_SCREENSHOT", tmp_path / "keep.png"))
     db.close()
