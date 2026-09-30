@@ -233,8 +233,18 @@ class RelayEngine:
                 raise RelayRefused("No active conversation; use start.")
             text = message or "The human reviewed the situation. Continue from the latest evidence."
             prompt = text.rstrip() + "\n\n" + ade.PM_PROTOCOL + "\n" if role == "pm" else prompts.with_protocol(text)
+            kind = "USER"
+            # A chat that never received anything (its first message was not
+            # persisted) has no context: send that first message again, with
+            # the human's note, instead of a bare note.
+            opener = conn.execute(
+                "SELECT kind, prompt_text FROM requests WHERE conversation_id = ? ORDER BY sequence_number LIMIT 1",
+                (conv["id"],)).fetchone()
+            if conv["conversation_url"] is None and not conv["char_count"] and opener is not None:
+                kind = opener["kind"]
+                prompt = opener["prompt_text"] + (f"\n\nNote from the human: {message.strip()}\n" if message else "")
             request_id = store.create_request(
-                conn, session_id=rt["session_id"], conversation_id=conv["id"], kind="USER", role=role,
+                conn, session_id=rt["session_id"], conversation_id=conv["id"], kind=kind, role=role,
                 prompt=prompt, model=None if role == "pm" else self._model_label(conn, pid) or None,
             )
             if last and last["successor_request_id"] is None:
