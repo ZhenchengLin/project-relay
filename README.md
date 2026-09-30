@@ -139,7 +139,7 @@ Relay runs AI-written commands on your machine. Read
 
 - A message is sent **at most once**; anything re-sent is a new, logged request.
 - A reply is used only when it is **final**, never while a model is still writing.
-- **Cut-off scripts never run** (unclosed heredoc, `bash -n` error).
+- **Broken scripts never run.** Before running, Relay checks for a cut-off script (unclosed heredoc), bash and embedded-Python syntax errors, leftover Markdown fences, invisible characters, elided code and placeholders; the model is told exactly which line is wrong.
 - **Blocked outright:** `sudo`, `git reset --hard`, `git clean -f`, `git stash`,
   `git checkout --`, `git restore`, `git switch -f`, `git branch -D`, force
   push, `rm -rf ~`, disk formatting, … — also when written with `git -C dir` or

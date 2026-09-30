@@ -138,11 +138,17 @@ def blocked_command_prompt(reason: str) -> str:
     )
 
 
-def incomplete_script_prompt(reason: str) -> str:
+def incomplete_script_prompt(problems: list[str] | str) -> str:
+    if isinstance(problems, str):
+        problems = [problems]
+    listed = "\n".join(f"- {p}" for p in problems)
+    cut_off = any("never closed" in p for p in problems)
     return with_protocol(
-        f"[Relay] Relay did NOT run your last script: {reason}. A long reply can "
-        "arrive cut off. Please send the complete script again as exactly one bash "
-        "block (shorter is safer)."
+        "[Relay] Relay did NOT run your last script. Problems found before running it:\n"
+        f"{listed}\n\n"
+        + ("A long reply can arrive cut off; shorter is safer. " if cut_off else "")
+        + "Send the complete corrected script again as exactly one bash block. "
+        "Do not leave anything out and do not use placeholders."
     )
 
 

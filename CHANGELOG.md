@@ -8,6 +8,13 @@
 - Plan: the PM's `RELAY_PLAN` checklist, with progress in the dashboard.
 - KPIs per run in the dashboard and `prelay status`.
 - Schema v4 (project_notes, plan_tasks); API `/v2/notes`, `/v2/supervisor`.
+- Script checks before running (Layer 1), each reported to the model with its
+  line: unclosed heredocs, bash syntax errors, Python syntax errors inside
+  quoted `python … <<'PY'` blocks, a Markdown fence inside the script,
+  invisible characters, Windows line endings, elided code
+  (`# ... rest unchanged`), placeholders (`<your-path>`, `/path/to/`), and
+  shellcheck errors when shellcheck is installed. Replayed on 51 real
+  commands: only the one truly broken script is flagged.
 
 ## 2.1.2
 

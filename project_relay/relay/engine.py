@@ -33,7 +33,7 @@ from ..storage.database import RelayDatabase
 from . import ade, kpi, memory, prompts, store
 from .config import relay_config, watchdog_config
 from .runner import RunResult, run_bash
-from .shell import dangerous_reason, extract_shell_blocks, incomplete_reason
+from .shell import dangerous_reason, extract_shell_blocks, script_problems
 from .urls import ROLE_SITE, canonical_conversation_url, conversation_id, is_new_chat_page, site_of
 
 PROVISIONAL_USER_TURN = "group:user:pending-chatgpt-submit"
@@ -716,7 +716,7 @@ class RelayEngine:
         git_before = None
         blocks = extract_shell_blocks(text)
         if (req["kind"] != "HANDOFF" and len(blocks) == 1 and not dangerous_reason(blocks[0])
-                and not incomplete_reason(blocks[0])):
+                and not script_problems(blocks[0])):
             git_before = self.git(self._root(rt))  # outside the DB transaction
 
         with self.lock, self.db.transaction() as conn:
@@ -766,13 +766,13 @@ class RelayEngine:
                            f"Reply contained {len(blocks)} bash blocks.")
             else:
                 danger = dangerous_reason(blocks[0])
-                broken = None if danger else incomplete_reason(blocks[0])
+                broken = [] if danger else script_problems(blocks[0])
                 if danger:
                     problem = ("danger", prompts.blocked_command_prompt(danger),
                                f"Safety guard blocked: {danger}.")
                 elif broken:
                     problem = ("incomplete", prompts.incomplete_script_prompt(broken),
-                               f"Script not run: {broken}.")
+                               "Script not run: " + "; ".join(broken)[:400])
             if problem:
                 _, nudge, reason = problem
                 used = self._consecutive(conn, rt, lambda r: r["kind"] == "NUDGE")
