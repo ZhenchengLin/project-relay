@@ -1,3 +1,13 @@
+## 2.2.1 — Dashboard for long goals
+
+- Run cards fold the goal to its first line with its size (lines · chars);
+  expand to read the whole plan in its own scroll box, with a Copy button.
+  The fold and scroll position survive the 2-second refresh.
+- Run cards are laid out in two columns (goal, plan and last command | chats,
+  memory, activity), with Pause/Stop/Resume at the top.
+- Start form: a large goal box with a live size count, "Load from file…" for
+  the goal and the rules, and the optional chat URLs folded away.
+
 ## 2.2.0 — Supervisor, memory, plan, KPIs
 
 - Supervisor inside prelayd: desktop alerts when a run needs you, pauses,

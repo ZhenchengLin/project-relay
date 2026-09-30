@@ -5,6 +5,7 @@
 const $ = (id) => document.getElementById(id);
 const lastEventId = {};
 const notesOpen = {};
+const goalOpen = {};
 const timelines = {};
 
 function api(method, path, body) {
@@ -167,7 +168,7 @@ function planView(rt) {
   const done = tasks.filter((t) => t.status === "done").length;
   const mark = { done: "✓", doing: "▸", blocked: "!", todo: "○" };
   return el("div", { class: "plan" },
-    el("p", { class: "muted" }, `Plan · ${done}/${tasks.length} done`),
+    el("div", { class: "section" }, `Plan · ${done}/${tasks.length} done`),
     el("div", { class: "bar" }, el("div", { style: `width:${Math.round((100 * done) / tasks.length)}%` })),
     ...tasks.map((t) => el("div", { class: `st-${t.status}` }, `${mark[t.status] || "○"} ${t.task_key} ${t.title}`)));
 }
@@ -187,12 +188,44 @@ async function notesView(rt) {
     await api("POST", "/v2/notes/remove", { project: rt.project, id: note.id });
     refresh();
   };
-  const box = el("details", { class: "notes", ...(notesOpen[rt.project] ? { open: "" } : {}) },
-    el("summary", {}, `Project memory (${notes.length})`),
-    ...notes.map((n) => el("div", {}, `• ${n.text} `, el("span", { class: "muted" }, `(${n.source})`),
-      el("button", { onclick: () => remove(n), title: "Forget this" }, "×"))),
-    el("button", { onclick: add }, "Add note…"));
+  const box = el("details", { class: "fold notes", ...(notesOpen[rt.project] ? { open: "" } : {}) },
+    el("summary", {}, el("span", { class: "label" }, "Project memory"),
+      el("span", { class: "headline muted" }, notes.length ? `${notes.length} note${notes.length === 1 ? "" : "s"}` : "empty")),
+    el("div", { class: "body" },
+      ...notes.map((n) => el("div", {}, `• ${n.text} `, el("span", { class: "muted" }, `(${n.source})`),
+        el("button", { onclick: () => remove(n), title: "Forget this" }, "×"))),
+      el("button", { class: "small", onclick: add }, "Add note…")));
   box.addEventListener("toggle", () => { notesOpen[rt.project] = box.open; });
+  return box;
+}
+
+function sizeText(text) {
+  const lines = text.split("\n").length;
+  return `${lines} line${lines === 1 ? "" : "s"} · ${text.length.toLocaleString()} chars`;
+}
+
+// A long goal (a whole plan) folds to its first line; the full text scrolls inside the card.
+function goalView(rt) {
+  const text = (rt.goal || "").trim();
+  if (!text) return null;
+  const first = (text.split("\n").find((line) => line.trim()) || "")
+    .replace(/^[\s#>*\-]+/, "").replace(/[*`_]/g, "").trim();
+  const copy = el("button", {
+    class: "small",
+    onclick: async () => {
+      try { await navigator.clipboard.writeText(text); copy.textContent = "Copied"; } catch (_) { copy.textContent = "Copy failed"; }
+      setTimeout(() => { copy.textContent = "Copy"; }, 1500);
+    },
+  }, "Copy");
+  const box = el("details", { class: "fold", ...(goalOpen[rt.project] ? { open: "" } : {}) },
+    el("summary", { title: first },
+      el("span", { class: "label" }, rt.mode === "ade" ? "Goal" : "First message"),
+      el("span", { class: "headline" }, first),
+      el("span", { class: "size muted" }, sizeText(text))),
+    el("div", { class: "body" },
+      el("div", { class: "tools" }, copy),
+      el("pre", { class: "long", "data-scroll": `goal:${rt.project}` }, text)));
+  box.addEventListener("toggle", () => { goalOpen[rt.project] = box.open; });
   return box;
 }
 
@@ -200,50 +233,56 @@ async function runCard(rt) {
   const events = await loadTimeline(rt.project);
   const notes = await notesView(rt);
   const exec = rt.last_execution;
-  const card = el("div", { class: "panel card" },
+  const resume = () => {
+    const needsMessage = rt.status !== "PAUSED";
+    const message = needsMessage
+      ? prompt(`Message to the ${rt.mode === "ade" ? "PM (Claude)" : "ChatGPT"} when resuming (optional):`)
+      : null;
+    if (message === null && needsMessage) return;
+    if (!needsMessage && !confirm(`Resume ${rt.project}?`)) return;
+    control("resume", rt.project, message ? { message } : {});
+  };
+  const card = el("div", { class: `panel card st-${rt.status}` },
     el("div", { class: "head" },
-      el("h3", {}, rt.project, " ",
-        el("span", { class: `badge ${rt.mode === "ade" ? "pm" : "worker"}` }, rt.mode === "ade" ? "ADE" : "solo"), " ",
-        statusBadge(rt.status)),
-      el("span", { class: "muted" }, `command ${rt.cycle_count} of ${rt.max_cycles}`
-        + (rt.mode === "ade" ? ` · review: ${rt.review_policy}` : ""))),
+      el("div", {},
+        el("div", { class: "title" },
+          el("h3", {}, rt.project),
+          el("span", { class: `badge ${rt.mode === "ade" ? "pm" : "worker"}` }, rt.mode === "ade" ? "ADE" : "solo"),
+          statusBadge(rt.status)),
+        el("div", { class: "sub" }, `command ${rt.cycle_count} of ${rt.max_cycles}`
+          + (rt.mode === "ade" ? ` · review: ${rt.review_policy}` : ""), " · ", el("code", {}, rt.root))),
+      el("div", { class: "controls", style: "margin-top:0" },
+        el("div", { class: "left" },
+          rt.status === "RUNNING" ? el("button", { onclick: () => control("pause", rt.project) }, "Pause") : null,
+          ["RUNNING", "PAUSED", "HUMAN_REQUIRED"].includes(rt.status)
+            ? el("button", { class: "danger", onclick: () => confirm(`Stop ${rt.project}?`) && control("stop", rt.project) }, "Stop")
+            : null),
+        el("div", { class: "right" },
+          el("button", { onclick: () => arrange(rt) }, "Arrange windows"),
+          rt.status !== "RUNNING"
+            ? el("button", { class: "primary", onclick: resume }, rt.status === "PAUSED" ? "Resume" : "Resume with a message…")
+            : null))),
     el("div", { class: "step" }, stepText(rt)),
-    kpiTiles(rt.kpi),
-    planView(rt),
     rt.reason && rt.status !== "RUNNING"
       ? el("p", { class: rt.status === "FINISHED" || rt.status === "STOPPED" ? "muted" : "error" }, rt.reason)
       : null,
-    el("div", { class: "kv" },
-      rt.goal ? [el("span", { class: "muted" }, "Goal"), el("span", {}, rt.goal)] : [],
-      rt.mode === "ade" ? [el("span", { class: "muted" }, "PM (Claude)"), chatLink(rt.pm_conversation, "Claude")] : [],
-      [el("span", { class: "muted" }, rt.mode === "ade" ? "Worker (ChatGPT)" : "ChatGPT"), chatLink(rt.conversation, "ChatGPT")],
-      [el("span", { class: "muted" }, "Repository"), el("code", {}, rt.root)]),
-    notes,
-    exec ? el("div", {},
-      el("p", { class: "muted" }, `Last command · ${exec.completed_at ? "exit " + exec.return_code : "running…"}`),
-      el("pre", {}, exec.command_head)) : null,
-    el("div", { class: "controls" },
-      el("div", { class: "left" },
-        rt.status === "RUNNING" ? el("button", { onclick: () => control("pause", rt.project) }, "Pause") : null,
-        ["RUNNING", "PAUSED", "HUMAN_REQUIRED"].includes(rt.status)
-          ? el("button", { class: "danger", onclick: () => confirm(`Stop ${rt.project}?`) && control("stop", rt.project) }, "Stop")
-          : null),
-      el("div", { class: "right" },
-        el("button", { onclick: () => arrange(rt) }, "Arrange windows"),
-        rt.status !== "RUNNING" ? el("button", {
-          class: "primary",
-          onclick: () => {
-            const needsMessage = rt.status !== "PAUSED";
-            const message = needsMessage
-              ? prompt(`Message to the ${rt.mode === "ade" ? "PM (Claude)" : "ChatGPT"} when resuming (optional):`)
-              : null;
-            if (message === null && needsMessage) return;
-            if (!needsMessage && !confirm(`Resume ${rt.project}?`)) return;
-            control("resume", rt.project, message ? { message } : {});
-          },
-        }, rt.status === "PAUSED" ? "Resume" : "Resume with a message…") : null)),
-    el("div", { class: "timeline" }, ...events.slice(-15).reverse().map((line) =>
-      el("div", {}, el("time", {}, line.at.slice(11, 19)), line.text))));
+    kpiTiles(rt.kpi),
+    el("div", { class: "cols" },
+      el("div", {},
+        goalView(rt),
+        planView(rt),
+        exec ? [
+          el("div", { class: "section" }, `Last command · ${exec.completed_at ? "exit " + exec.return_code : "running…"}`),
+          el("pre", {}, exec.command_head)] : null),
+      el("div", {},
+        el("div", { class: "section" }, "Chats"),
+        el("div", { class: "kv" },
+          rt.mode === "ade" ? [el("span", { class: "muted" }, "PM (Claude)"), chatLink(rt.pm_conversation, "Claude")] : [],
+          [el("span", { class: "muted" }, rt.mode === "ade" ? "Worker (ChatGPT)" : "ChatGPT"), chatLink(rt.conversation, "ChatGPT")]),
+        notes,
+        el("div", { class: "section" }, "Activity"),
+        el("div", { class: "timeline", "data-scroll": `timeline:${rt.project}` }, ...events.slice(-30).reverse().map((line) =>
+          el("div", {}, el("time", {}, line.at.slice(11, 19)), line.text))))));
   return card;
 }
 
@@ -267,7 +306,12 @@ async function refresh() {
   }
   const runtimes = status.data.runtimes.filter((rt) => rt.status !== "STOPPED" || timelines[rt.project]);
   const cards = await Promise.all(runtimes.map(runCard));
+  const scrolled = [...document.querySelectorAll("[data-scroll]")].map((n) => [n.dataset.scroll, n.scrollTop]);
   $("runs").replaceChildren(...(cards.length ? cards : [el("p", { class: "muted" }, "No runs yet. Start one below.")]));
+  for (const [key, top] of scrolled) {
+    const node = document.querySelector(`[data-scroll="${CSS.escape(key)}"]`);
+    if (node) node.scrollTop = top;
+  }
 }
 
 // ------------------------------------------------------------- start form
@@ -299,6 +343,25 @@ async function start(arrangeAfter) {
   }
   refresh();
 }
+
+function showCount(id) {
+  const text = $(id).value.trim();
+  $(`${id}-count`).textContent = text ? sizeText(text) : "";
+}
+
+let loadTarget = null;
+for (const button of document.querySelectorAll("[data-load]")) {
+  button.addEventListener("click", () => { loadTarget = button.dataset.load; $("file-picker").click(); });
+}
+$("file-picker").addEventListener("change", async () => {
+  const file = $("file-picker").files[0];
+  if (file && loadTarget) {
+    $(loadTarget).value = await file.text();
+    showCount(loadTarget);
+  }
+  $("file-picker").value = "";
+});
+for (const id of ["goal", "rules"]) $(id).addEventListener("input", () => showCount(id));
 
 $("start").addEventListener("click", () => start(false));
 $("start-arrange").addEventListener("click", () => start(true));

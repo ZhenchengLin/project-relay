@@ -123,7 +123,9 @@ def test_ade_end_to_end(tmp_path):
     assert "Sent (exactly once)." in text and "PM approved the command." in text  # timeline
     assert "chat #1" in text and "chat #2" not in text
     # Memory, plan, KPIs and the supervisor bar.
-    assert "Project memory (1)" in text and "Plan · 2/2 done" in text
+    assert "Project memory" in text and "1 note" in text and "plan · 2/2 done" in text.lower()
+    # The goal is folded to its first line with its size; the full text is inside the closed fold.
+    assert "Goal" in text and " chars" in text
     assert "commands run" in text and "PM approvals" in text and "Supervisor: watching" in text
     notes = [n["text"] for n in db.conn.execute("SELECT text FROM project_notes WHERE active = 1")]
     assert notes == ["commit only the files a task names"]
