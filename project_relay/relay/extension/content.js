@@ -954,6 +954,12 @@
           }
           return;
         }
+      } else {
+        setStatus(`looking for ${SITE.label}'s reply to ${userTurn} on this page…`);
+        if (Date.now() >= nextProbe) {
+          nextProbe = Date.now() + T.probeEveryMs;
+          await report(null, "searching");
+        }
       }
       await sleep(700);
     }
