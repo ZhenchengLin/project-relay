@@ -445,7 +445,7 @@ def test_v1_database_migrates_to_v2(tmp_path):
     conn.commit()
     conn.close()
     with RelayDatabase(path) as db:
-        assert db.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 3
+        assert db.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 4
         cols = {r[1] for r in db.conn.execute("PRAGMA table_info(requests)")}
         assert {"conversation_id", "kind", "model", "baseline_json", "successor_request_id"} <= cols
         assert db.conn.execute("SELECT conversation_url FROM projects").fetchone()[0] == URL

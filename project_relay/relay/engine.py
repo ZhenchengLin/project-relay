@@ -30,7 +30,7 @@ from typing import Any, Callable
 from .. import core
 from ..state import StateError, sha256_text, transition_request_in
 from ..storage.database import RelayDatabase
-from . import ade, prompts, store
+from . import ade, memory, prompts, store
 from .config import relay_config, watchdog_config
 from .runner import RunResult, run_bash
 from .shell import dangerous_reason, extract_shell_blocks, incomplete_reason
@@ -185,13 +185,15 @@ class RelayEngine:
                 request_id = store.create_request(
                     conn, session_id=session_id, conversation_id=pm_conv["id"], kind="PM_PLAN", role="pm",
                     prompt=ade.pm_kickoff(project=name, root=root, goal=goal or seed or "",
-                                          rules=rules, git=git_now),
+                                          rules=rules, git=git_now, memory=memory.render(conn, pid)),
                     model=None,
                 )
             else:
+                remembered = memory.render(conn, pid)
+                seed_text = (seed or prompts.DEFAULT_SEED) + (f"\n\n{remembered}" if remembered else "")
                 request_id = store.create_request(
                     conn, session_id=session_id, conversation_id=active["id"], kind="SEED",
-                    prompt=prompts.with_protocol(seed or prompts.DEFAULT_SEED),
+                    prompt=prompts.with_protocol(seed_text),
                     model=self._model_label(conn, pid) or None,
                 )
         self._wake.set()
@@ -681,7 +683,8 @@ class RelayEngine:
         new = store.create_conversation(conn, project_id=rt["project_id"], url=None, predecessor_id=old["id"],
                                         role=role, site=old["site"])
         prompt = prompts.rollover_seed(chat_number=new["sequence_number"], handoff=handoff,
-                                       pending_prompt=pending_prompt)
+                                       pending_prompt=pending_prompt,
+                                       memory=memory.render(conn, rt["project_id"]))
         if role == "pm" and not pending_prompt.strip():
             prompt = prompts.without_protocol(prompt) + "\n\n" + ade.PM_PROTOCOL + "\n"
         return store.create_request(
@@ -710,6 +713,9 @@ class RelayEngine:
         with self.lock, self.db.transaction() as conn:
             rt = store.runtime(conn, rt["project_id"]) | {"repository_root": rt["repository_root"],
                                                            "project_name": rt["project_name"]}
+            # Planner replies (the ADE PM, or the solo chat) may carry notes and a plan.
+            if req["role"] == "pm" or rt["mode"] != "ade":
+                memory.capture(conn, rt["project_id"], text, request_id=req["id"])
             if req["kind"] == "HANDOFF":
                 handoff = text
                 lines = text.splitlines()

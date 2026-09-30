@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from . import prompts
+from .memory import PLANNER_HINT
 from .shell import GIT
 
 TASK_START = "RELAY_TASK"
@@ -37,6 +38,7 @@ constraints, what evidence the command must print>
 {ASK_HUMAN}: <what you need from the human and why>
 
 Keep each task small and verifiable. Never write the shell command yourself.
+{PLANNER_HINT}
 """.strip()
 
 WORKER_PROTOCOL = """
@@ -120,7 +122,8 @@ def review_reasons(script: str, policy: str) -> list[str]:
 
 # ------------------------------------------------------------------ prompts
 
-def pm_kickoff(*, project: str, root: str, goal: str, rules: str, git: dict[str, Any]) -> str:
+def pm_kickoff(*, project: str, root: str, goal: str, rules: str, git: dict[str, Any],
+               memory: str = "") -> str:
     parts = [
         f"Project Relay ADE is starting on project {project}.",
         f"Repository: {root}",
@@ -132,6 +135,8 @@ def pm_kickoff(*, project: str, root: str, goal: str, rules: str, git: dict[str,
     if rules.strip():
         parts += ["", "Rules from the human (must always hold):", rules.strip()]
     parts += ["", "Uncommitted state right now:", _fence(prompts.truncate_middle(git.get("git_status", ""), 3000))]
+    if memory.strip():
+        parts += ["", memory.strip()]
     return "\n".join(parts) + "\n\n" + PM_PROTOCOL + "\n"
 
 

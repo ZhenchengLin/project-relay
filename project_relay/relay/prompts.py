@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .memory import PLANNER_HINT
+
 FENCE = "`" * 3
 
 DONE_MARKER = "RELAY_DONE"
@@ -18,6 +20,7 @@ PROTOCOL = f"""
 - Never claim success without evidence from the terminal output.
 - If human judgment is required, explain why and do not include a bash block.
 - When the whole project goal is finished and verified, reply with a line containing only {DONE_MARKER} and no bash block.
+{PLANNER_HINT}
 """.strip()
 
 
@@ -162,6 +165,7 @@ def rollover_seed(
     chat_number: int,
     handoff: str,
     pending_prompt: str,
+    memory: str = "",
 ) -> str:
     body = [
         f"[Project Relay] Continuation chat #{chat_number}. The previous chat reached "
@@ -172,6 +176,8 @@ def rollover_seed(
         handoff.strip(),
         "=== END HANDOFF ===",
     ]
+    if memory.strip():
+        body += ["", memory.strip()]
     if pending_prompt.strip():
         body += [
             "",

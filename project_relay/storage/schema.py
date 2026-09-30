@@ -1,4 +1,4 @@
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 MIGRATION_1_SQL = r'''
 CREATE TABLE projects (
@@ -203,4 +203,41 @@ DROP INDEX one_active_conversation_per_project;
 CREATE UNIQUE INDEX one_active_conversation_per_project_role
     ON conversations(project_id, role)
     WHERE status = 'ACTIVE';
+'''
+
+
+# V4: project memory and the PM's plan.
+#
+# project_notes  durable facts a project should never forget (decisions,
+#                rules, lessons). Written by the PM (RELAY_NOTE:), by you
+#                (dashboard / CLI) or by Relay; injected into every kickoff,
+#                handoff and fresh chat.
+# plan_tasks     the milestone list the PM maintains with a RELAY_PLAN block.
+MIGRATION_4_SQL = r'''
+CREATE TABLE project_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL
+        REFERENCES projects(id)
+        ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    text TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    request_id TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX project_notes_project_active
+    ON project_notes(project_id, active);
+
+CREATE TABLE plan_tasks (
+    project_id TEXT NOT NULL
+        REFERENCES projects(id)
+        ON DELETE CASCADE,
+    task_key TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (project_id, task_key)
+);
 '''
