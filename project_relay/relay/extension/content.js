@@ -49,7 +49,7 @@
       'form[data-chatgpt-composer] [contenteditable="true"][role="textbox"]',
       'div.ProseMirror[contenteditable="true"]',
       "textarea",
-    ].join(","),
+    ],
     sendSel: [
       'button[data-testid="send-button"]',
       'button[data-testid="composer-submit-button"]',
@@ -90,7 +90,7 @@
       '[data-testid="chat-input"]',
       'div.ProseMirror[contenteditable="true"]',
       '[contenteditable="true"][role="textbox"]',
-    ].join(","),
+    ],
     sendSel: [
       'button[aria-label="Send message"]',
       'button[aria-label="Send Message"]',
@@ -219,10 +219,18 @@
     return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
   }
 
+  // Candidates are tried in priority order (the site's own composer id first,
+  // a generic textarea last). querySelectorAll returns document order, so a
+  // single combined selector would let any earlier visible textarea on the
+  // page (e.g. on a fresh-chat page) win and receive the prompt.
   function composer() {
-    return [...document.querySelectorAll(SITE.composerSel)].find(
-      (el) => visible(el) && !el.closest("#project-relay-panel-host"),
-    ) || null;
+    for (const selector of SITE.composerSel) {
+      const match = [...document.querySelectorAll(selector)].find(
+        (el) => visible(el) && !el.closest("#project-relay-panel-host"),
+      );
+      if (match) return match;
+    }
+    return null;
   }
 
   function composerText(el) {

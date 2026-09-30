@@ -1,3 +1,11 @@
+## 2.1.1
+
+- Fix: on a fresh ChatGPT chat the prompt could be typed into another
+  textarea on the page (document order beat selector priority), so Send never
+  enabled and the run paused (seen after an automatic chat rollover). The
+  composer is now chosen by selector priority. Regression-tested with a decoy
+  textarea in the mock page.
+
 ## 2.1.0 — Relay ADE
 
 - Packaged for anyone to fork and install: MIT license, `pip`/`pipx`

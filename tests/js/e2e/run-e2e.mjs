@@ -134,9 +134,10 @@ while (Date.now() < deadline) {
 }
 
 const storage = await page.evaluate(() => localStorage.getItem("mock-convs"));
+const decoyValue = await page.evaluate(() => document.getElementById("decoy")?.value ?? null);
 const panelText = await page.evaluate(() => document.title);
 await writeFile(args.report, JSON.stringify({
-  final, sends, dropped, mockConversations: JSON.parse(storage || "{}"), url: page.url(), panelText,
+  final, sends, dropped, mockConversations: JSON.parse(storage || "{}"), url: page.url(), panelText, decoyValue,
   extensionWorker: worker.url(),
 }, null, 2));
 await browser.close();

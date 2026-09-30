@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Project Relay",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Relay ADE: Claude plans, ChatGPT writes one Bash block, your Mac runs it, the evidence goes back.",
   "permissions": [
     "storage",

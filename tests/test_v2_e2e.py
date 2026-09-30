@@ -111,6 +111,9 @@ def test_extension_end_to_end(tmp_path):
     # pending-chatgpt-submit never became a durable identity.
     assert all("pending" not in (r["user_turn_id"] or "") for r in requests)
 
+    # The decoy textarea on the page never received a prompt.
+    assert report["decoyValue"] == ""
+
     # Every durable user turn in the mock belongs to exactly one request.
     mock_keys = {f"group:user:{t['key']}" for c in report["mockConversations"].values() for t in c["turns"]}
     bound = {r["user_turn_id"] for r in requests if r["user_turn_id"]}

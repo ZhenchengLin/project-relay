@@ -14,6 +14,10 @@
 </style>
 </head>
 <body>
+<!-- Live fresh-chat pages contain other visible textareas before the real
+     composer; Relay must still pick the composer (regression: 2.1.0 typed the
+     prompt into the first textarea in page order). -->
+<textarea id="decoy" aria-label="Search chats" rows="1"></textarea>
 <header>
   <button data-testid="model-switcher-dropdown-button" aria-haspopup="menu" id="model">ChatGPT Auto</button>
   <div id="menu" role="menu" hidden>
