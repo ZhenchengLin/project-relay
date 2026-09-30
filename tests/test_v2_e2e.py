@@ -62,7 +62,7 @@ def test_extension_end_to_end(tmp_path):
     ext.mkdir()
     for name in EXTENSION_FILES:
         shutil.copy2(EXTENSION_SOURCE / name, ext / name)
-    timing = {"acceptAfterSendMs": 6000, "acceptObservedMs": 4000, "acceptSettleMs": 800,
+    timing = {"trace": True, "acceptAfterSendMs": 6000, "acceptObservedMs": 4000, "acceptSettleMs": 800,
               "pollMs": 700, "probeEveryMs": 1500, "completion": {"stoppedMs": 600, "stableMs": 900}}
     (ext / "relay-config.js").write_text(
         f"self.RELAY_CONFIG = {json.dumps({'port': port, 'token': token, 'timing': timing})};\n")
@@ -75,8 +75,8 @@ def test_extension_end_to_end(tmp_path):
         proc = subprocess.run(
             ["node", str(JS_DIR / "e2e/run-e2e.mjs"), "--port", str(port), "--token", token,
              "--ext", str(ext), "--profile", str(tmp_path / "chrome-profile"), "--report", str(report_path),
-             "--timeout", "240000"],
-            cwd=JS_DIR, capture_output=True, text=True, timeout=300,
+             "--timeout", str(int(os.environ.get("RELAY_E2E_TIMEOUT_MS", "240000")))],
+            cwd=JS_DIR, capture_output=True, text=True, timeout=420,
         )
     finally:
         engine.shutdown()
@@ -87,7 +87,8 @@ def test_extension_end_to_end(tmp_path):
     print(json.dumps({k: report[k] for k in ("final", "sends")}, indent=2))
 
     # The run finished because ChatGPT (mock) said RELAY_DONE.
-    assert report["final"]["status"] == "FINISHED", report["final"]
+    assert report["final"] and report["final"]["status"] == "FINISHED", (
+        report.get("lastStatus"), report["sends"], report.get("trace", [])[-25:])
 
     # Real local execution happened in the project repo.
     log = subprocess.run(["git", "-C", str(repo), "log", "--oneline"], capture_output=True, text=True).stdout

@@ -130,6 +130,8 @@
     acceptObservedMs: 25000,    // same, after a reload or tab takeover
     acceptSettleMs: 2000,       // the new turn must persist this long
     replyTimeoutMs: 45 * 60 * 1000,
+    busyWaitMs: 15 * 60 * 1000, // the chat is still generating when Relay arrives to send
+    trace: false,               // tests: keep a status trace in sessionStorage
     probeEveryMs: 20000,        // diagnostics while waiting for a reply
     pollMs: 4000,
     completion: {},             // stoppedMs / stableMs / fallbackStableMs
@@ -739,6 +741,20 @@
       const [code, message] = pageProblem();
       return fail(job, code, message);
     }
+    // Never type into a chat that is still generating (the send button is a
+    // Stop button then). Wait for it to finish instead of failing.
+    if (generating()) {
+      const until = Date.now() + T.busyWaitMs;
+      const why = [...document.querySelectorAll(SITE.stopSel)].filter(visible)
+        .map((b) => b.getAttribute("aria-label") || b.getAttribute("data-testid") || b.tagName).join(", ");
+      setStatus(`${SITE.label} is still generating in this chat (${why}); waiting before sending…`);
+      while (generating() && Date.now() < until) await sleep(1000);
+      if (generating()) {
+        return fail(job, "PAGE_BROKEN", `${SITE.label} was still generating after `
+          + `${Math.round(T.busyWaitMs / 60000)} minutes; not sending into a busy chat`);
+      }
+      await sleep(1500);
+    }
     if (job.conversation_url && !(await waitForTurns(15000))) {
       return fail(job, "CONVERSATION_NOT_FOUND", "No turns rendered on the bound conversation");
     }
@@ -779,7 +795,7 @@
     if (!button) {
       const form = composer() && (composer().closest("form, fieldset") || composer().parentElement);
       const evidence = {
-        site: SITE.name, version: chrome.runtime.getManifest().version,
+        site: SITE.name, version: chrome.runtime.getManifest().version, generating: generating(),
         composer_area_buttons: form ? [...form.querySelectorAll("button")].slice(0, 20).map((b) => ({
           label: (b.getAttribute("aria-label") || "").slice(0, 40), testid: b.getAttribute("data-testid") || "",
           type: b.getAttribute("type") || "", disabled: b.disabled, visible: visible(b),
@@ -991,6 +1007,13 @@
 
   function setStatus(text) {
     if (panel && active) panel.status.textContent = text;
+    if (T.trace) {
+      try {
+        const lines = JSON.parse(sessionStorage.getItem("projectRelayTrace") || "[]");
+        lines.push(`${new Date().toISOString().slice(11, 19)} ${text}`);
+        sessionStorage.setItem("projectRelayTrace", JSON.stringify(lines.slice(-300)));
+      } catch (_) {}
+    }
   }
 
   function renderIdle(job) {

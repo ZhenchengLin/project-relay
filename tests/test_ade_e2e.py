@@ -56,7 +56,7 @@ def test_ade_end_to_end(tmp_path):
     ext.mkdir()
     for name in EXTENSION_FILES:
         shutil.copy2(EXTENSION_SOURCE / name, ext / name)
-    timing = {"acceptAfterSendMs": 8000, "acceptObservedMs": 5000, "acceptSettleMs": 800,
+    timing = {"trace": True, "acceptAfterSendMs": 8000, "acceptObservedMs": 5000, "acceptSettleMs": 800,
               "pollMs": 700, "probeEveryMs": 2000, "completion": {"stoppedMs": 600, "stableMs": 900}}
     (ext / "relay-config.js").write_text(
         f"self.RELAY_CONFIG = {json.dumps({'port': port, 'token': token, 'timing': timing})};\n")
@@ -70,7 +70,7 @@ def test_ade_end_to_end(tmp_path):
             ["node", str(JS_DIR / "e2e/run-e2e-ade.mjs"), "--port", str(port), "--token", token,
              "--ext", str(ext), "--profile", str(tmp_path / "chrome-profile"), "--report", str(report_path),
              "--timeout", "240000", "--screenshot", str(tmp_path / "dashboard.png")],
-            cwd=JS_DIR, capture_output=True, text=True, timeout=300,
+            cwd=JS_DIR, capture_output=True, text=True, timeout=420,
         )
     finally:
         engine.shutdown()

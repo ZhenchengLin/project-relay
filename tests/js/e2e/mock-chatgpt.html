@@ -253,6 +253,21 @@
 
   window.addEventListener("popstate", renderAll);
   renderAll();
+
+  // Live regression: Relay can arrive while the chat is still generating
+  // (Stop shown instead of Send). On the first visit to the page, stay busy
+  // for 12 s; Relay must wait, not give up after its 10 s send-button wait.
+  if (sessionStorage.getItem("projectRelayActive") === "1" && !sessionStorage.getItem("mock-busy-once")) {
+    sessionStorage.setItem("mock-busy-once", "1");
+    // Same label as the live stop button Relay saw in this situation.
+    const busyStop = document.createElement("button");
+    busyStop.type = "button";
+    busyStop.setAttribute("aria-label", "停止");
+    busyStop.textContent = "■";
+    send.after(busyStop);
+    send.hidden = true;
+    setTimeout(() => { busyStop.remove(); send.hidden = false; }, 12000);
+  }
 })();
 </script>
 </body>

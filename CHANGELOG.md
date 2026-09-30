@@ -1,3 +1,14 @@
+## 2.1.2
+
+- Fix: if the chat is still generating when Relay arrives to send (Stop shown
+  instead of Send), wait for it to finish (up to 15 minutes) instead of
+  pausing after 10 seconds. Seen live on a Chinese-language ChatGPT UI.
+  Regression-tested: the mock page is busy for 12 s when Relay arrives; the
+  old code pauses, the new code waits and finishes.
+- Send-button failures record whether the chat was generating.
+- Tests: optional status trace for E2E debugging; the E2E harness bounds
+  every daemon call, always kills its headless Chrome and hard-stops itself.
+
 ## 2.1.1
 
 - Fix: on a fresh ChatGPT chat the prompt could be typed into another

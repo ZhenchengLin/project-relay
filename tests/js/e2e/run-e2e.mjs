@@ -51,11 +51,21 @@ function plan(prompt) {
 }
 
 async function daemon(pathname) {
-  const res = await fetch(`http://127.0.0.1:${args.port}${pathname}`, {
-    headers: { "X-Relay-Token": args.token },
-  });
-  return res.json();
+  try {
+    const res = await fetch(`http://127.0.0.1:${args.port}${pathname}`, {
+      headers: { "X-Relay-Token": args.token }, signal: AbortSignal.timeout(5000),
+    });
+    return await res.json();
+  } catch (error) {
+    return { error: String(error) };
+  }
 }
+
+// Never outlive the test, and never leave headless Chrome running.
+const hardStop = setTimeout(() => {
+  try { chromeProcess.kill("SIGKILL"); } catch (_) {}
+  process.exit(3);
+}, Number(args.timeout || 240000) + 60000);
 
 // Branded Chrome ignores --load-extension, so launch it with remote
 // debugging on the throwaway profile and load the unpacked extension over
@@ -123,9 +133,11 @@ await page.reload();
 
 const deadline = Date.now() + Number(args.timeout || 240000);
 let final = null;
+let lastStatus = null;
 while (Date.now() < deadline) {
   const status = await daemon("/v2/status");
   const rt = status.runtimes?.[0];
+  lastStatus = rt;
   if (rt && !["RUNNING"].includes(rt.status)) {
     final = rt;
     break;
@@ -133,13 +145,17 @@ while (Date.now() < deadline) {
   await new Promise((r) => setTimeout(r, 500));
 }
 
-const storage = await page.evaluate(() => localStorage.getItem("mock-convs"));
-const decoyValue = await page.evaluate(() => document.getElementById("decoy")?.value ?? null);
+const withTimeout = (promise, fallback) =>
+  Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve(fallback), 5000))]);
+const storage = await withTimeout(page.evaluate(() => localStorage.getItem("mock-convs")), null);
+const decoyValue = await withTimeout(page.evaluate(() => document.getElementById("decoy")?.value ?? null), null);
+const trace = await withTimeout(page.evaluate(() => sessionStorage.getItem("projectRelayTrace")), null);
 const panelText = await page.evaluate(() => document.title);
 await writeFile(args.report, JSON.stringify({
-  final, sends, dropped, mockConversations: JSON.parse(storage || "{}"), url: page.url(), panelText, decoyValue,
+  final, lastStatus, trace: JSON.parse(trace || "[]"), sends, dropped, mockConversations: JSON.parse(storage || "{}"), url: page.url(), panelText, decoyValue,
   extensionWorker: worker.url(),
 }, null, 2));
-await browser.close();
-chromeProcess.kill();
+await withTimeout(browser.close(), null);
+chromeProcess.kill("SIGKILL");
+clearTimeout(hardStop);
 console.log(final ? `E2E_FINAL=${final.status}` : "E2E_TIMEOUT");
