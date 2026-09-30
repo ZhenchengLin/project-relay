@@ -408,6 +408,37 @@
     });
   }
 
+  // Claude turns. claude.ai marks only replies streamed in this page with
+  // data-is-streaming; replies loaded from history (after any reload) carry
+  // just their reply root. So each reply is paired with the user message
+  // before it, by document position, never counted on its own.
+  const CLAUDE_REPLY_MARK = `${CLAUDE.assistantSel}, ${CLAUDE.markdownSel}`;
+  const after = (a, b) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+
+  function claudeTurns() {
+    const users = outermost(document, CLAUDE.userSel);
+    const marks = outermost(document, CLAUDE_REPLY_MARK).filter((node) => !node.closest(CLAUDE.userSel));
+    let m = 0;
+    const replies = users.map((user, i) => {
+      while (m < marks.length && !after(user, marks[m])) m++;
+      const next = users[i + 1];
+      return m < marks.length && (!next || after(marks[m], next)) ? claudeReplyScope(marks[m]) : null;
+    });
+    return { users, replies };
+  }
+
+  // The whole reply turn: a live wrapper as is; otherwise the highest ancestor
+  // of the reply root that holds no user message.
+  function claudeReplyScope(mark) {
+    if (mark.matches(CLAUDE.assistantSel)) return mark;
+    let scope = mark;
+    while (scope.parentElement && scope.parentElement !== document.body
+           && !scope.parentElement.querySelector(CLAUDE.userSel)) {
+      scope = scope.parentElement;
+    }
+    return scope;
+  }
+
   function standaloneContainers() {
     return [...document.querySelectorAll("[data-turn-id-container]")].filter((el) => {
       if (el.closest("[data-turn-key]")) return false;
@@ -423,10 +454,10 @@
   // Claude: turns by position, claude:user:<n> / claude:assistant:<n>.
   function inventory() {
     if (SITE === CLAUDE) {
-      const users = outermost(document, CLAUDE.userSel);
-      const assistants = outermost(document, CLAUDE.assistantSel);
+      const { users, replies } = claudeTurns();
       return {
-        ids: [...users.map((_, i) => `claude:user:${i}`), ...assistants.map((_, i) => `claude:assistant:${i}`)],
+        ids: [...users.map((_, i) => `claude:user:${i}`),
+              ...replies.flatMap((reply, i) => (reply ? [`claude:assistant:${i}`] : []))],
         legacyUsers: [],
       };
     }
@@ -470,7 +501,7 @@
   function acceptedByServer(candidate) {
     if (!Core.conversationIdFromUrl(location.href)) return false;
     if (SITE !== CLAUDE) return true;
-    return outermost(document, CLAUDE.assistantSel).length > Core.claudeIndex(candidate);
+    return Boolean(claudeTurns().replies[Core.claudeIndex(candidate)]);
   }
 
   // Reply roots inside a turn scope, excluding the user's own message.
@@ -482,8 +513,8 @@
   function findAssistant(userTurnId) {
     const index = Core.claudeIndex(userTurnId);
     if (index !== null) {
-      const container = outermost(document, CLAUDE.assistantSel)[index];
-      return container ? { id: `claude:assistant:${index}`, scope: container } : null;
+      const reply = claudeTurns().replies[index];
+      return reply ? { id: `claude:assistant:${index}`, scope: reply } : null;
     }
     const key = Core.groupKey(userTurnId);
     if (key) {
@@ -592,7 +623,9 @@
       site: SITE.name,
       streaming_attr: found ? found.scope.getAttribute("data-is-streaming") : null,
       user_count: outermost(document, SITE.userSel).length,
-      assistant_count: outermost(document, SITE.assistantSel).length,
+      assistant_count: SITE === CLAUDE ? claudeTurns().replies.filter(Boolean).length
+        : outermost(document, SITE.assistantSel).length,
+      streaming_marked: outermost(document, SITE.assistantSel).length,
       visibility: document.visibilityState,
       has_focus: document.hasFocus(),
     };

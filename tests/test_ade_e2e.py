@@ -118,6 +118,7 @@ def test_ade_end_to_end(tmp_path):
 
     # The dashboard rendered the finished run, with no script errors.
     assert report["consoleErrors"] == [], report["consoleErrors"]
+    assert report["pmReloaded"]  # the Claude tab was reloaded mid-run and the run still finished
     text = report["dashboardText"]
     assert "Relay ADE" in text and "demo" in text and "Finished" in text and "prelayd running" in text
     assert "Sent (exactly once)." in text and "PM approved the command." in text  # timeline

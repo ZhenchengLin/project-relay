@@ -1,3 +1,16 @@
+## 2.2.3 — Claude after a reload
+
+- Fix: claude.ai marks only replies streamed in the current page with
+  `data-is-streaming`; after any reload, earlier replies lack it. Relay counted
+  replies by that marker, so after a reload it could not confirm a sent message
+  or find a reply. Replies are now paired with the user message before them by
+  position (live wrapper, or the reply root's turn).
+- Resuming into a chat that never received its first message re-sends that
+  message instead of a bare note.
+- Tabs report a probe while they are still looking for a reply.
+- E2E: the Claude tab is reloaded mid-run; the mock renders history like
+  claude.ai.
+
 ## 2.2.2 — Know when a chat tab is missing
 
 - Relay tabs send a heartbeat every 20 s, even during a long step. When a

@@ -127,7 +127,15 @@ const workerPage = await relayTab("https://chatgpt.com/");
 
 const deadline = Date.now() + Number(args.timeout || 240000);
 let final = null;
+let pmReloaded = false;
 while (Date.now() < deadline) {
+  // Reload the Claude tab once the Worker has its task: the PM's next message
+  // (the review) must then be sent and read on a page whose earlier replies
+  // come from history, as after any reload on claude.ai.
+  if (!pmReloaded && sends.some((s) => s.site === "chatgpt")) {
+    pmReloaded = true;
+    await pmPage.reload();
+  }
   const status = await daemon("/v2/status");
   const rt = status.runtimes?.[0];
   if (rt && rt.status !== "RUNNING") {
@@ -149,7 +157,7 @@ const dashboardText = await dashboard.evaluate(() => document.body.innerText);
 if (args.screenshot) await dashboard.screenshot({ path: args.screenshot, fullPage: true });
 
 await writeFile(args.report, JSON.stringify({
-  final, sends, dashboardText, consoleErrors,
+  final, sends, dashboardText, consoleErrors, pmReloaded,
   claudeStore: JSON.parse((await pmPage.evaluate(() => localStorage.getItem("mock-claude-convs"))) || "{}"),
   chatgptStore: JSON.parse((await workerPage.evaluate(() => localStorage.getItem("mock-convs"))) || "{}"),
   pmUrl: pmPage.url(), workerUrl: workerPage.url(),

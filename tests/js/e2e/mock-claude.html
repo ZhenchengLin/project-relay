@@ -14,7 +14,8 @@
 </head>
 <body>
 <!-- Mirrors the claude.ai markers Relay's CLAUDE profile relies on:
-     [data-testid="user-message"], assistant wrappers with data-is-streaming,
+     [data-testid="user-message"], assistant wrappers with data-is-streaming
+     (only on replies streamed in this page, not on history after a reload),
      .font-claude-response reply roots, a ProseMirror composer, and
      "Send message" / "Stop response" buttons. The user message appears
      optimistically before the server answers, like the real site. -->
@@ -67,11 +68,13 @@
     return u;
   }
 
-  function assistantEl(text, streaming) {
+  // Like claude.ai: only a reply streamed in this page carries data-is-streaming;
+  // replies loaded from history after a reload have just their reply root.
+  function historyAssistantEl(text) {
     const a = document.createElement("div");
-    a.setAttribute("data-is-streaming", streaming ? "true" : "false");
+    a.className = "assistant-turn";
     a.append(markdown(text));
-    if (!streaming) a.append(actionBar());
+    a.append(actionBar());
     return a;
   }
 
@@ -94,7 +97,7 @@
     if (!conv) return;
     for (const turn of conv.turns) {
       thread.append(userEl(turn.user));
-      if (turn.assistant != null) thread.append(assistantEl(turn.assistant, false));
+      if (turn.assistant != null) thread.append(historyAssistantEl(turn.assistant));
     }
   }
 
