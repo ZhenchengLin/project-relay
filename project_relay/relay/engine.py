@@ -30,7 +30,7 @@ from typing import Any, Callable
 from .. import core
 from ..state import StateError, sha256_text, transition_request_in
 from ..storage.database import RelayDatabase
-from . import ade, memory, prompts, store
+from . import ade, kpi, memory, prompts, store
 from .config import relay_config, watchdog_config
 from .runner import RunResult, run_bash
 from .shell import dangerous_reason, extract_shell_blocks, incomplete_reason
@@ -115,6 +115,8 @@ class RelayEngine:
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._thread: threading.Thread | None = None
+        # Set by prelayd; consulted for quiet hours before handing out a send.
+        self.supervisor: Any = None
 
     # ================================================================ control
 
@@ -269,6 +271,9 @@ class RelayEngine:
                        JOIN requests r ON r.id = e.request_id WHERE r.session_id = ?
                        ORDER BY e.started_at DESC LIMIT 1""", (rt["session_id"],)).fetchone()
                 result.append({
+                    "kpi": kpi.run_kpis(conn, rt["project_id"], rt["session_id"]),
+                    "plan": memory.plan(conn, rt["project_id"]),
+                    "notes": len(memory.active_notes(conn, rt["project_id"])),
                     "project": rt["project_name"],
                     "root": rt["repository_root"],
                     "status": rt["status"],
@@ -344,6 +349,10 @@ class RelayEngine:
                 owner = req["browser_lease"]
                 if owner and owner != lease and self._lease_fresh(owner):
                     return {"type": "idle", "role": role, "reason": "Another tab owns this request."}
+                if (req["state"] in {"QUEUED", "PREPARING_BROWSER"} and self.supervisor is not None
+                        and self.supervisor.is_quiet()):
+                    return {"type": "idle", "role": role,
+                            "reason": "Quiet hours: Relay sends nothing new until they end."}
                 if req["state"] == "QUEUED":
                     transition_request_in(conn, request_id=req["id"], to_state="PREPARING_BROWSER",
                                           updates={"browser_lease": lease})

@@ -3,7 +3,7 @@
 // chrome.runtime messages; page scripts on chatgpt.com cannot.
 importScripts("relay-config.js");
 
-const ALLOWED_PATH = /^\/v2\/(health|status|projects|events|browser\/[a-z]+|control\/[a-z]+)(\?[\w=&%.-]*)?$/;
+const ALLOWED_PATH = /^\/v2\/(health|status|projects|events|supervisor|notes(\/[a-z]+)?|browser\/[a-z]+|control\/[a-z]+)(\?[\w=&%.-]*)?$/;
 
 async function callDaemon(method, path, body) {
   if (!ALLOWED_PATH.test(path) || !["GET", "POST"].includes(method)) {
