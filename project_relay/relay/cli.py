@@ -197,6 +197,8 @@ def _print_status(runtimes: list[dict[str, Any]]) -> None:
         if req:
             print(f"  request {req['id']} {req['kind']} {req['state']}"
                   + (f" model={req['model']}" if req.get("model") else ""))
+        for text in rt.get("pending_human") or []:
+            print(f"  > waiting to tell the PM: {text[:120]}")
         missing = rt.get("missing_tab")
         if missing:
             site = "Claude (claude.ai)" if missing["site"] == "claude" else "ChatGPT (chatgpt.com)"
@@ -222,6 +224,15 @@ def cmd_control(args: Any) -> int:
         body["message"] = args.message
     call("POST", f"/v2/control/{args.action}", body, port=args.port)
     print(f"{args.project}: {args.action} ok")
+    return 0
+
+
+def cmd_tell(args: Any) -> int:
+    result = call("POST", "/v2/control/tell", {"project": args.project, "text": args.text,
+                                                "remember": args.remember}, port=args.port)
+    print(f"{args.project}: added to the top of the PM's next message"
+          + (" (already queued, so it goes out right away)" if result.get("in_next_message_now") else "")
+          + ("; also kept in project memory." if args.remember else "."))
     return 0
 
 
@@ -387,6 +398,14 @@ def add_commands(sub: Any) -> None:
         if action == "resume":
             p.add_argument("--message", help="Message to send to ChatGPT when resuming after a stop.")
         p.set_defaults(func=cmd_control, action=action)
+
+    p = rs.add_parser("tell", help="Tell the PM (or ChatGPT in solo mode) something; it arrives with "
+                                   "its next message, without pausing the run.")
+    p.add_argument("project")
+    p.add_argument("text")
+    p.add_argument("--remember", action="store_true",
+                   help="Also keep it in project memory, so every future chat gets it too.")
+    p.set_defaults(func=cmd_tell)
 
     p = rs.add_parser("notes", help="Show, add or remove a project's memory notes (and see its plan).")
     p.add_argument("project")

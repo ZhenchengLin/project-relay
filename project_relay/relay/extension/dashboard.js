@@ -100,6 +100,8 @@ function eventLine(e) {
     case "SUPERVISOR_ALERT": return `⚑ ${p.message}`;
     case "NOTE_ADDED": return `Remembered (${p.source}): ${p.text}`;
     case "NOTE_REMOVED": return `Forgot note #${p.id}.`;
+    case "HUMAN_MESSAGE": return `You: “${String(p.text).slice(0, 160)}”${p.remember ? " (remembered)" : ""}`;
+    case "HUMAN_MESSAGE_DELIVERED": return `Your message${p.messages?.length > 1 ? "s" : ""} went out with the next message.`;
     case "PLAN_UPDATED": return `Plan updated: ${p.done}/${p.tasks} done.`;
     default: return null;
   }
@@ -250,6 +252,16 @@ async function runCard(rt) {
     if (!needsMessage && !confirm(`Resume ${rt.project}?`)) return;
     control("resume", rt.project, message ? { message } : {});
   };
+  const planner = rt.mode === "ade" ? "PM (Claude)" : "ChatGPT";
+  const tell = async () => {
+    const text = prompt(`Tell the ${planner} something. It goes at the top of its next message; the run keeps going.`);
+    if (!text || !text.trim()) return;
+    const remember = confirm("Also keep it in project memory, so every future chat (after a rollover or restart) "
+      + "gets it too?\n\nOK = remember it · Cancel = just this once");
+    const res = await api("POST", "/v2/control/tell", { project: rt.project, text: text.trim(), remember });
+    if (!res.ok) alert(res.data.error || "Could not queue the message.");
+    refresh();
+  };
   const card = el("div", { class: `panel card st-${rt.missing_tab ? "HUMAN_REQUIRED" : rt.status}` },
     el("div", { class: "head" },
       el("div", {},
@@ -266,11 +278,17 @@ async function runCard(rt) {
             ? el("button", { class: "danger", onclick: () => confirm(`Stop ${rt.project}?`) && control("stop", rt.project) }, "Stop")
             : null),
         el("div", { class: "right" },
+          el("button", { onclick: tell, title: "Message the planner without pausing the run" },
+            rt.mode === "ade" ? "Tell the PM…" : "Tell ChatGPT…"),
           el("button", { onclick: () => arrange(rt) }, "Arrange windows"),
           rt.status !== "RUNNING"
             ? el("button", { class: "primary", onclick: resume }, rt.status === "PAUSED" ? "Resume" : "Resume with a message…")
             : null))),
     el("div", { class: "step" }, stepText(rt)),
+    (rt.pending_human || []).length
+      ? el("p", { class: "muted" }, `Waiting to tell the ${planner} with its next message: `,
+        ...(rt.pending_human).map((t, i) => el("span", {}, i ? " · " : "", `“${t.length > 140 ? t.slice(0, 137) + "…" : t}”`)))
+      : null,
     rt.reason && rt.status !== "RUNNING"
       ? el("p", { class: rt.status === "FINISHED" || rt.status === "STOPPED" ? "muted" : "error" }, rt.reason)
       : null,

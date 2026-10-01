@@ -190,20 +190,23 @@ class RelayEngine:
                 if pm_conv is None:
                     pm_conv = store.create_conversation(conn, project_id=pid, url=pm_url, predecessor_id=None,
                                                         role="pm", site="claude")
+                kickoff, told = self._with_human(conn, pid, ade.pm_kickoff(
+                    project=name, root=root, goal=goal or seed or "", rules=rules, git=git_now,
+                    memory=memory.render(conn, pid)))
                 request_id = store.create_request(
                     conn, session_id=session_id, conversation_id=pm_conv["id"], kind="PM_PLAN", role="pm",
-                    prompt=ade.pm_kickoff(project=name, root=root, goal=goal or seed or "",
-                                          rules=rules, git=git_now, memory=memory.render(conn, pid)),
-                    model=None,
+                    prompt=kickoff, model=None,
                 )
+                self._delivered(conn, pid, request_id, told)
             else:
                 remembered = memory.render(conn, pid)
                 seed_text = (seed or prompts.DEFAULT_SEED) + (f"\n\n{remembered}" if remembered else "")
+                seed_prompt, told = self._with_human(conn, pid, prompts.with_protocol(seed_text))
                 request_id = store.create_request(
                     conn, session_id=session_id, conversation_id=active["id"], kind="SEED",
-                    prompt=prompts.with_protocol(seed_text),
-                    model=self._model_label(conn, pid) or None,
+                    prompt=seed_prompt, model=self._model_label(conn, pid) or None,
                 )
+                self._delivered(conn, pid, request_id, told)
         self._wake.set()
         return {"project": name, "session_id": session_id, "request_id": request_id, "mode": mode,
                 "conversation_url": active["conversation_url"],
@@ -244,10 +247,12 @@ class RelayEngine:
             if conv["conversation_url"] is None and not conv["char_count"] and opener is not None:
                 kind = opener["kind"]
                 prompt = opener["prompt_text"] + (f"\n\nNote from the human: {message.strip()}\n" if message else "")
+            prompt, told = self._with_human(conn, pid, prompt)
             request_id = store.create_request(
                 conn, session_id=rt["session_id"], conversation_id=conv["id"], kind=kind, role=role,
                 prompt=prompt, model=None if role == "pm" else self._model_label(conn, pid) or None,
             )
+            self._delivered(conn, pid, request_id, told)
             if last and last["successor_request_id"] is None:
                 store.set_request_fields(conn, last["id"], successor_request_id=request_id)
             store.update_runtime(conn, pid, status="RUNNING", reason=None)
@@ -262,6 +267,58 @@ class RelayEngine:
                 transition_request_in(conn, request_id=last["id"], to_state="CANCELLED",
                                       payload={"reason": "stopped by user"})
             store.update_runtime(conn, pid, status="STOPPED", reason="Stopped by user.")
+
+    def tell(self, name: str, text: str, remember: bool = False) -> dict[str, Any]:
+        """Queue a message for the planner (the PM, or ChatGPT in solo mode): it goes at the top
+        of the planner's next message, without pausing the run. remember=True also keeps it
+        in project memory, so every future chat gets it."""
+        text = (text or "").strip()
+        if not text:
+            raise RelayRefused("Nothing to tell.")
+        with self.lock, self.db.transaction() as conn:
+            pid, rt = self._runtime_for(conn, name)
+            store.event(conn, project_id=pid, event_type="HUMAN_MESSAGE",
+                        payload={"text": text[:4000], "remember": bool(remember)})
+            if remember:
+                memory.add_note(conn, pid, text, source="user")
+            # The planner's next message is queued but not typed yet: replace it with
+            # the same message plus this one (prompts are never edited in place).
+            last = store.latest_request(conn, rt["session_id"]) if rt["session_id"] else None
+            planner = "pm" if rt["mode"] == "ade" else "worker"
+            now = bool(last and last["state"] == "QUEUED" and last["role"] == planner and last["kind"] != "HANDOFF")
+            if now:
+                prompt, told = self._with_human(conn, pid, last["prompt_text"])
+                transition_request_in(conn, request_id=last["id"], to_state="CANCELLED",
+                                      payload={"reason": "replaced to add a message from the human"})
+                replacement = store.create_request(
+                    conn, session_id=rt["session_id"], conversation_id=last["conversation_id"], kind=last["kind"],
+                    prompt=prompt, model=last["model"], role=last["role"], detail=last["detail"])
+                store.set_request_fields(conn, last["id"], successor_request_id=replacement)
+                self._delivered(conn, pid, replacement, told)
+        self._wake.set()
+        return {"queued": True, "remembered": bool(remember), "in_next_message_now": now}
+
+    @staticmethod
+    def _pending_human(conn, project_id: str) -> list[tuple[int, str]]:
+        delivered = conn.execute("SELECT COALESCE(MAX(id), 0) FROM events WHERE project_id = ? "
+                                 "AND event_type = 'HUMAN_MESSAGE_DELIVERED'", (project_id,)).fetchone()[0]
+        return [(row[0], json.loads(row[1])["text"]) for row in conn.execute(
+            "SELECT id, payload_json FROM events WHERE project_id = ? AND event_type = 'HUMAN_MESSAGE' "
+            "AND id > ? ORDER BY id", (project_id, delivered))]
+
+    def _with_human(self, conn, project_id: str, prompt: str) -> tuple[str, list[int]]:
+        """Put waiting human messages at the top of a planner prompt."""
+        pending = self._pending_human(conn, project_id)
+        if not pending:
+            return prompt, []
+        block = "\n".join(f"- {text}" for _, text in pending)
+        return (f"Message from the human (read this first, then continue):\n{block}\n\n{prompt}",
+                [event_id for event_id, _ in pending])
+
+    def _delivered(self, conn, project_id: str, request_id: str, ids: list[int]) -> None:
+        if ids:
+            store.event(conn, project_id=project_id, request_id=request_id,
+                        event_type="HUMAN_MESSAGE_DELIVERED", payload={"messages": ids})
 
     def status(self) -> list[dict[str, Any]]:
         with self.lock:
@@ -298,6 +355,7 @@ class RelayEngine:
                     "goal": rt["goal"],
                     "review_policy": rt["review_policy"],
                     "missing_tab": self.missing_tab(rt, last),
+                    "pending_human": [text for _, text in self._pending_human(conn, rt["project_id"])],
                     "model_mode": rt["model_mode"],
                     "cycle_count": rt["cycle_count"],
                     "max_cycles": rt["max_cycles"],
@@ -710,6 +768,10 @@ class RelayEngine:
         conv = store.active_conversation(conn, rt["project_id"], role)
         if conv is None:
             raise StateError(f"No active {role} conversation.")
+        planner = "pm" if rt["mode"] == "ade" else "worker"
+        told: list[int] = []
+        if role == planner and kind != "HANDOFF":
+            prompt, told = self._with_human(conn, rt["project_id"], prompt)
         if role == "pm":
             label = ""
         else:
@@ -717,14 +779,18 @@ class RelayEngine:
         budget = int(self.cfg["rollover_char_budget"])
         if (kind not in {"HANDOFF", "ROLLOVER_SEED"} and conv["conversation_url"]
                 and conv["char_count"] + len(prompt) > budget):
-            return store.create_request(
+            request_id = store.create_request(
                 conn, session_id=rt["session_id"], conversation_id=conv["id"], kind="HANDOFF", role=role,
                 prompt=prompts.handoff_request(), model=label or None,
                 detail=json.dumps({"pending_prompt": prompt, "pending_kind": kind,
                                    "pending_model": label, "pending_detail": detail}),
             )
-        return store.create_request(conn, session_id=rt["session_id"], conversation_id=conv["id"],
-                                    kind=kind, prompt=prompt, model=label or None, role=role, detail=detail)
+        else:
+            request_id = store.create_request(conn, session_id=rt["session_id"], conversation_id=conv["id"],
+                                              kind=kind, prompt=prompt, model=label or None, role=role,
+                                              detail=detail)
+        self._delivered(conn, rt["project_id"], request_id, told)
+        return request_id
 
     def _finish_with(self, conn, rt, req, *, prompt: str, kind: str, model: str | None = None,
                      from_state: str = "ASSISTANT_COMPLETE", detail: str | None = None,

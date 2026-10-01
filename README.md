@@ -102,6 +102,7 @@ goals go in a file: `--goal-file plan.md`.
 | `prelay status` | Every run: status, step, chats, cycle count |
 | `prelay log myapp` | Event log (add `--verbose` for browser diagnostics) |
 | `prelay pause myapp` / `prelay resume myapp [--message "…"]` / `prelay stop myapp` | Control a run |
+| `prelay tell myapp "The repo has a GitHub remote; push to relay/work" [--remember]` | Tell the PM something mid-run: it goes at the top of the PM's next message (also **Tell the PM…** in the dashboard). `--remember` keeps it in project memory for every future chat. |
 | `prelay start myapp --url https://chatgpt.com/c/…` | Solo mode in an existing ChatGPT chat (or `--new-chat --seed "…"`) |
 | `prelay notes myapp [--add "…" \| --remove ID]` | Show/edit the project's memory and see its plan |
 | `prelay doctor` | Check the installation |

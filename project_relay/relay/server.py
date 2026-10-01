@@ -151,6 +151,8 @@ def routes(engine: RelayEngine) -> dict[tuple[str, str], Callable[[dict[str, Any
             message=str(b.get("message") or ""), evidence=b.get("evidence") or {}),
         ("POST", "/v2/control/start"): lambda b: _start_payload(engine, b),
         ("POST", "/v2/control/pause"): lambda b: engine.pause(b["project"]) or {"ok": True},
+        ("POST", "/v2/control/tell"): lambda b: engine.tell(
+            b["project"], str(b.get("text") or ""), remember=bool(b.get("remember"))),
         ("POST", "/v2/control/resume"): lambda b: engine.resume(b["project"], b.get("message")),
         ("POST", "/v2/control/stop"): lambda b: engine.stop(b["project"]) or {"ok": True},
     }

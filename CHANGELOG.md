@@ -1,3 +1,15 @@
+## 2.4.0 — Tell the PM
+
+- `prelay tell PROJECT "…" [--remember]` and **Tell the PM…** on each run card:
+  a message for the planner (the PM, or ChatGPT in solo mode) that goes at the
+  top of its next message without pausing the run. If that message is queued
+  but not typed yet, it is replaced by the same message with yours on top (the
+  old one is cancelled, never edited). Also delivered with a kickoff or resume.
+  `--remember` also keeps it in project memory for every future chat.
+- Waiting messages show on the run card and in `prelay status`; the timeline
+  shows when they went out. API: `POST /v2/control/tell`; `pending_human` in
+  `/v2/status`.
+
 ## 2.3.0 — Relay opens the chats itself
 
 - Start a run with just a goal (`prelay ade PROJECT --goal-file FILE`): when a
