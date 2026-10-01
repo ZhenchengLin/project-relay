@@ -111,12 +111,19 @@ def cmd_stop_daemon(args: Any) -> int:
         path.unlink(missing_ok=True)
         print("prelayd was not running (stale pid file removed).")
         return 0
+    # Wait until the process is gone (not only silent), so its port is free
+    # for a daemon started right after this.
     for _ in range(50):
-        if not daemon_alive(args.port):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
             print("prelayd stopped.")
             return 0
         time.sleep(0.2)
-    print("prelayd did not stop within 10s.", file=sys.stderr)
+    if not daemon_alive(args.port):
+        print("prelayd stopped answering, but its process has not exited yet.", file=sys.stderr)
+    else:
+        print("prelayd did not stop within 10s.", file=sys.stderr)
     return 1
 
 
