@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "project-relay"
-version = "2.2.3"
+version = "2.2.4"
 description = "Relay ADE: Claude plans, ChatGPT writes one Bash block, your machine runs it — through your own browser, no API keys."
 readme = "README.md"
 requires-python = ">=3.10"

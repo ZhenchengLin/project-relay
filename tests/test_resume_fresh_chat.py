@@ -62,3 +62,21 @@ def test_resume_into_a_known_chat_sends_a_note(tmp_path):
     engine.resume("demo", "try again please")
     req = store.latest_request(db.conn, rt["session_id"])
     assert req["kind"] == "USER" and req["prompt_text"].startswith("try again please")
+
+
+def test_claude_jobs_carry_match_text_without_the_protocol(tmp_path):
+    from project_relay.relay import ade
+    engine, db, root = make(tmp_path)
+    engine.start(name="demo", root=root, mode="ade", goal="Ship the parser", conversation_url=WORKER_URL)
+    job = engine.poll(lease="t", page_url="https://claude.ai/new")
+    assert "Ship the parser" in job["match_text"]
+    assert ade.PM_PROTOCOL.strip().splitlines()[0] not in job["match_text"]
+    engine.ready(lease="t", request_id=job["request_id"], page_url="https://claude.ai/new", baseline=[])
+    observe = engine.poll(lease="t", page_url="https://claude.ai/new")
+    assert observe["type"] == "observe" and observe["match_text"] == job["match_text"]
+    turn = "claude:user:r" + job["request_id"].removeprefix("req-")
+    engine.accepted(lease="t", request_id=job["request_id"], user_turn_id=turn, page_url=PM_URL)
+    engine.bound(lease="t", request_id=job["request_id"], assistant_turn_id=turn.replace(":user:", ":assistant:"))
+    assert store.get_request(db.conn, job["request_id"])["state"] == "ASSISTANT_BOUND"
+    worker = engine.poll(lease="w", page_url=WORKER_URL)
+    assert "match_text" not in worker

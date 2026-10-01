@@ -122,6 +122,14 @@ def review_reasons(script: str, policy: str) -> list[str]:
 
 # ------------------------------------------------------------------ prompts
 
+def match_text(prompt: str) -> str:
+    """The part of a PM message that identifies it on claude.ai: the message
+    without the protocol block every PM message ends with."""
+    head = PM_PROTOCOL.strip().splitlines()[0]
+    cut = prompt.find(head)
+    return (prompt[:cut] if cut > 0 else prompt).strip()
+
+
 def pm_kickoff(*, project: str, root: str, goal: str, rules: str, git: dict[str, Any],
                memory: str = "") -> str:
     parts = [

@@ -61,9 +61,20 @@
     return match ? Number(match[1]) : null;
   }
 
+  // Claude turns found by content are named after the request that sent them:
+  // claude:user:r<request> / claude:assistant:r<request>.
+  function claudeRequestTurn(requestId, role) {
+    return `claude:${role}:r${String(requestId || "").replace(/^req-/, "")}`;
+  }
+
+  function isClaudeRequestTurn(id) {
+    return /^claude:(?:user|assistant):r[0-9A-Za-z-]+$/.test(String(id || ""));
+  }
+
   function expectedAssistantId(userTurnId) {
     const key = groupKey(userTurnId);
     if (key) return `group:assistant:${key}`;
+    if (isClaudeRequestTurn(userTurnId)) return String(userTurnId).replace(/^claude:user:/, "claude:assistant:");
     const index = claudeIndex(userTurnId);
     return index === null ? null : `claude:assistant:${index}`;
   }
@@ -201,6 +212,8 @@
     isProvisional,
     groupKey,
     claudeIndex,
+    claudeRequestTurn,
+    isClaudeRequestTurn,
     siteOf,
     expectedAssistantId,
     newUserTurns,

@@ -1,10 +1,22 @@
+## 2.2.4 — Claude messages found by content
+
+- Fix: claude.ai renders only the tail of a long chat (the previous reply, the
+  last message and its reply), so position-based turn ids ("message #3") were
+  wrong whenever a chat was longer than the page. The message Relay sent is now
+  recognised by its content (letters and digits at a dozen spots, so Markdown
+  rendering does not matter), must be the newest message and not the one that
+  was newest before Send; its reply is the first reply after it. Turn ids are
+  named after the request (`claude:user:r<request>`).
+- Claude jobs carry `match_text` (the message without the protocol block).
+- NOT_PERSISTED on Claude now reports what the page showed.
+- Checked on the 11 real PM messages: all recognised after Markdown rendering,
+  none confused with the previous message.
+- E2E mock renders only the tail of the chat and Markdown user messages.
+
 ## 2.2.3 — Claude after a reload
 
-- Fix: claude.ai marks only replies streamed in the current page with
-  `data-is-streaming`; after any reload, earlier replies lack it. Relay counted
-  replies by that marker, so after a reload it could not confirm a sent message
-  or find a reply. Replies are now paired with the user message before them by
-  position (live wrapper, or the reply root's turn).
+- Claude replies are paired with the user message before them instead of
+  being counted on their own (superseded by 2.2.4).
 - Resuming into a chat that never received its first message re-sends that
   message instead of a bare note.
 - Tabs report a probe while they are still looking for a reply.

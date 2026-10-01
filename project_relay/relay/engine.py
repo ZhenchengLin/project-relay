@@ -425,6 +425,10 @@ class RelayEngine:
                                assistant_turn_id=req["assistant_turn_id"])
                 else:
                     job.update(type="submit", prompt=req["prompt_text"])
+                if conv["site"] == "claude":
+                    # claude.ai shows only the tail of a long chat, so Claude turns are
+                    # found by content: the extension matches this text, not a position.
+                    job["match_text"] = ade.match_text(req["prompt_text"])
                 return job
 
     def _runtime_summary(self, conn) -> list[dict[str, Any]]:

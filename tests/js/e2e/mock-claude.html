@@ -16,6 +16,7 @@
 <!-- Mirrors the claude.ai markers Relay's CLAUDE profile relies on:
      [data-testid="user-message"], assistant wrappers with data-is-streaming
      (only on replies streamed in this page, not on history after a reload),
+     only the tail of the chat after a load, Markdown-rendered user messages,
      .font-claude-response reply roots, a ProseMirror composer, and
      "Send message" / "Stop response" buttons. The user message appears
      optimistically before the server answers, like the real site. -->
@@ -61,10 +62,12 @@
     return box;
   }
 
+  // claude.ai renders the user's message as Markdown: fences, emphasis and
+  // list numbers are not in its text.
   function userEl(text) {
     const u = document.createElement("div");
     u.setAttribute("data-testid", "user-message");
-    u.textContent = text;
+    u.textContent = text.replace(/`{3}\w*/g, "").replace(/\*\*/g, "").replace(/^\s*\d+\.\s+/gm, "");
     return u;
   }
 
@@ -95,9 +98,15 @@
     thread.replaceChildren();
     const conv = load()[convId()];
     if (!conv) return;
-    for (const turn of conv.turns) {
-      thread.append(userEl(turn.user));
-      if (turn.assistant != null) thread.append(historyAssistantEl(turn.assistant));
+    // Like claude.ai on a long chat: only the tail is rendered after a load
+    // (the previous reply, then the last message and its reply).
+    const turns = conv.turns;
+    const prev = turns[turns.length - 2];
+    if (prev && prev.assistant != null) thread.append(historyAssistantEl(prev.assistant));
+    const last = turns[turns.length - 1];
+    if (last) {
+      thread.append(userEl(last.user));
+      if (last.assistant != null) thread.append(historyAssistantEl(last.assistant));
     }
   }
 

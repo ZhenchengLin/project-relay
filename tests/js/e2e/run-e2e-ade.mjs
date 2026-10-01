@@ -145,6 +145,14 @@ while (Date.now() < deadline) {
   await new Promise((r) => setTimeout(r, 500));
 }
 
+if (!final) {
+  // Timed out: say where the run was, and what each tab last showed.
+  const status = await daemon("/v2/status").catch((e) => ({ error: String(e) }));
+  const panel = async (page) => page.evaluate(() => sessionStorage.getItem("projectRelayTrace") || document.title).catch(String);
+  console.error(JSON.stringify({ sends, request: status.runtimes?.[0]?.request, reason: status.runtimes?.[0]?.reason,
+                                 pm: await panel(pmPage), worker: await panel(workerPage) }, null, 1).slice(0, 6000));
+}
+
 // The pinned dashboard: must render the finished run without script errors.
 const dashboard = await context.newPage();
 const consoleErrors = [];
