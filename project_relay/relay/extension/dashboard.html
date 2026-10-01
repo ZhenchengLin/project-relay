@@ -72,6 +72,56 @@
   .timeline time { color: var(--muted); margin-right: 8px; font-variant-numeric: tabular-nums; }
   .error { color: var(--bad); white-space: pre-wrap; }
   .two { display: grid; gap: 12px; grid-template-columns: 1fr 1fr; }
+  .kpis { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); margin: 10px 0; }
+  .tile { border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; }
+  .tile .v { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .tile .k { font-size: 11px; color: var(--muted); }
+  .plan, .notes { font-size: 13px; margin: 6px 0; }
+  .plan div, .notes div { padding: 1px 0; }
+  .st-done { color: var(--ok); } .st-doing { color: var(--accent); } .st-blocked { color: var(--bad); }
+  .notes button { padding: 0 6px; font-size: 11px; margin-left: 6px; }
+  #supervisor { margin-top: 6px; font-size: 13px; }
+  label.switch { display: flex; gap: 8px; align-items: center; font-weight: 400; font-size: 13px; color: var(--muted); margin: 6px 0 0; }
+  label.switch input { width: auto; margin: 0; }
+  .tell { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 10px 0; background: var(--bg); }
+  .tell-title { margin: 0 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .tell-input { min-height: 44px; background: var(--panel); font-size: 13px; }
+  .tell-row { display: flex; gap: 10px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
+  .tell-row .tell-remember { margin: 0; }
+  .tell-note { flex: 1; margin: 0; }
+  .tell-chip { font-size: 12px; margin-top: 6px; padding: 3px 8px; border-left: 3px solid var(--accent); background: var(--panel); border-radius: 4px; }
+  .card .title { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .card .title h3 { margin: 0; font-size: 17px; }
+  .card .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .card.st-HUMAN_REQUIRED { border-color: var(--warn); }
+  .card .step { background: var(--bg); border-left: 3px solid var(--accent); border-radius: 6px; padding: 8px 12px; }
+  .card.st-HUMAN_REQUIRED .step, .card.st-PAUSED .step { border-left-color: var(--warn); }
+  .cols { display: grid; gap: 16px; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); margin-top: 6px; }
+  .cols > div { min-width: 0; }
+  .section { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin: 14px 0 4px; }
+  details.fold { border: 1px solid var(--line); border-radius: 8px; margin: 8px 0; }
+  details.fold > summary { list-style: none; display: flex; gap: 8px; align-items: baseline; padding: 7px 10px;
+                           font-size: 13px; font-weight: 400; margin: 0; }
+  details.fold > summary::-webkit-details-marker { display: none; }
+  details.fold > summary::before { content: "▸"; color: var(--muted); }
+  details.fold[open] > summary::before { content: "▾"; }
+  details.fold[open] > summary { border-bottom: 1px solid var(--line); margin: 0; }
+  details.fold .label { font-weight: 600; white-space: nowrap; }
+  details.fold .headline { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  details.fold .size { font-size: 12px; white-space: nowrap; }
+  details.fold .body { padding: 8px 10px; }
+  pre.long { max-height: 360px; margin: 0; font: 13px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  .plan { max-height: 240px; overflow: auto; }
+  .tools { display: flex; gap: 6px; justify-content: flex-end; margin-bottom: 6px; }
+  button.small { padding: 2px 8px; font-size: 12px; }
+  .field-head { display: flex; align-items: baseline; gap: 10px; margin: 12px 0 4px; }
+  .field-head label { margin: 0; }
+  .field-head .hint { flex: 1; margin: 0; }
+  textarea.big { min-height: 200px; font-size: 13px; }
+  textarea.mid { min-height: 90px; font-size: 13px; }
+  .row3 { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+  .row3 label { margin-top: 0; }
+  @media (max-width: 860px) { .cols { grid-template-columns: 1fr; } }
   @media (max-width: 720px) { .two { grid-template-columns: 1fr; } }
 </style>
 </head>
@@ -84,6 +134,9 @@
     </div>
     <div id="daemon" class="badge">checking prelayd…</div>
   </div>
+  <div id="supervisor" class="muted"></div>
+  <label class="switch"><input type="checkbox" id="auto-open" checked>
+    Open Claude and ChatGPT by themselves: when a run needs a chat that is not open, Relay opens it (and reopens it if it is closed).</label>
 
   <h2>Runs</h2>
   <div id="runs"><p class="muted">Loading…</p></div>
@@ -145,9 +198,16 @@
           <li><b>always</b>: every command. Safest, uses the most Claude messages.</li>
           <li><b>never</b>: no pre-run review; the PM still sees every result.</li>
         </ul>
+        <h2>Supervisor, memory and plan</h2>
+        <ul class="tight">
+          <li><b>Alerts</b>: a desktop notification when a run needs you, pauses, finishes, or has been idle too long.</li>
+          <li><b>Budgets and quiet hours</b> (<code>supervisor</code> in <code>config.json</code>): daily Claude/ChatGPT message caps, and hours when Relay sends nothing new.</li>
+          <li><b>Memory</b>: facts the project must never forget (<code>RELAY_NOTE:</code> from the PM, or added here); they go into every new chat, so rollovers keep them.</li>
+          <li><b>Plan</b>: the PM keeps a <code>RELAY_PLAN</code> checklist; progress shows on each run.</li>
+        </ul>
         <h2>Tips</h2>
         <ul class="tight">
-          <li>Use <b>Arrange windows</b>: Claude and ChatGPT side by side and visible. Hidden tabs make both sites slow down replies.</li>
+          <li>Relay opens the Claude and ChatGPT chats a run needs by itself (switch at the top); <b>Arrange windows</b> does it on demand. Keep them visible: hidden tabs make both sites slow down replies.</li>
           <li>Two loop verdicts in a row stop the run for you.</li>
           <li>Long chats roll over automatically: the model writes a handoff and Relay continues in a new chat.</li>
           <li>Automating chatgpt.com and claude.ai is unofficial; keep a human pace.</li>
@@ -158,15 +218,11 @@
 
   <h2>Start a Relay ADE run</h2>
   <div class="panel">
-    <div class="two">
+    <div class="row3">
       <div>
         <label for="project">Project</label>
         <select id="project"></select>
-        <div class="hint">Register more with <code>prelay register NAME /path/to/repo</code>.</div>
-        <label for="goal">Goal for the PM</label>
-        <textarea id="goal" placeholder="e.g. Finish phase 2 of the plan in docs/PLAN.md and get the tests green."></textarea>
-        <label for="rules">Rules the PM must always enforce</label>
-        <textarea id="rules" placeholder="e.g. Never push. Never modify or delete existing uncommitted files."></textarea>
+        <div class="hint">Add one: <code>prelay register NAME /path/to/repo</code></div>
       </div>
       <div>
         <label for="review">Review policy</label>
@@ -175,14 +231,41 @@
           <option value="always">always: PM approves every command</option>
           <option value="never">never: no pre-run review</option>
         </select>
-        <label for="pm-url">PM chat on claude.ai (optional)</label>
-        <input id="pm-url" placeholder="https://claude.ai/chat/…  (empty = new chat)">
-        <label for="worker-url">Worker chat on chatgpt.com (optional)</label>
-        <input id="worker-url" placeholder="https://chatgpt.com/c/…  (empty = new chat)">
+      </div>
+      <div>
         <label for="max">Max commands</label>
         <input id="max" type="number" min="1" value="50">
       </div>
     </div>
+
+    <div class="field-head">
+      <label for="goal">Goal for the PM</label>
+      <span class="hint" id="goal-count"></span>
+      <button class="small" data-load="goal">Load from file…</button>
+    </div>
+    <textarea id="goal" class="big" placeholder="e.g. Finish phase 2 of the plan in docs/PLAN.md and get the tests green.&#10;&#10;Long plans are fine: paste the whole thing, or load a .md/.txt file. Put a short title on the first line; run cards show only that line until you expand the goal."></textarea>
+
+    <div class="field-head">
+      <label for="rules">Rules the PM must always enforce</label>
+      <span class="hint" id="rules-count"></span>
+      <button class="small" data-load="rules">Load from file…</button>
+    </div>
+    <textarea id="rules" class="mid" placeholder="e.g. Never push. Never modify or delete existing uncommitted files."></textarea>
+
+    <details class="fold">
+      <summary><span class="label">Chats</span><span class="headline muted">new Claude and ChatGPT chats unless you paste existing ones</span></summary>
+      <div class="body two">
+        <div>
+          <label for="pm-url">PM chat on claude.ai</label>
+          <input id="pm-url" placeholder="https://claude.ai/chat/…  (empty = new chat)">
+        </div>
+        <div>
+          <label for="worker-url">Worker chat on chatgpt.com</label>
+          <input id="worker-url" placeholder="https://chatgpt.com/c/…  (empty = new chat)">
+        </div>
+      </div>
+    </details>
+
     <div class="controls">
       <div class="left"></div>
       <div class="right">
@@ -191,6 +274,7 @@
       </div>
     </div>
     <div id="form-error" class="error"></div>
+    <input type="file" id="file-picker" accept=".md,.txt,.markdown,text/*" hidden>
   </div>
 </main>
 <script src="relay-core.js"></script>

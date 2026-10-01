@@ -3,7 +3,7 @@
 // chrome.runtime messages; page scripts on chatgpt.com cannot.
 importScripts("relay-config.js");
 
-const ALLOWED_PATH = /^\/v2\/(health|status|projects|events|browser\/[a-z]+|control\/[a-z]+)(\?[\w=&%.-]*)?$/;
+const ALLOWED_PATH = /^\/v2\/(health|status|projects|events|supervisor|notes(\/[a-z]+)?|browser\/[a-z]+|control\/[a-z]+)(\?[\w=&%.-]*)?$/;
 
 async function callDaemon(method, path, body) {
   if (!ALLOWED_PATH.test(path) || !["GET", "POST"].includes(method)) {
@@ -121,3 +121,82 @@ async function arrangeWindows({ project, pmUrl, workerUrl, screen }) {
   const bound = await Promise.all(created.map((tabId) => bindWhenReady(tabId, project)));
   return { ok: bound.every(Boolean), bound };
 }
+
+// ---------------------------------------------------------------- auto-open
+// When a running step needs a Claude or ChatGPT tab and none is connected
+// (prelayd reports it as missing_tab), open it: the run's chat, or a new chat,
+// in its own window (Claude left, ChatGPT right) and bind it to the run. A tab
+// already on that chat but cut off (e.g. by an extension reload) is reloaded
+// instead. At most one attempt per run and site every few minutes, so a tab
+// that is still loading is never opened twice. Off: the dashboard switch.
+const AUTO_OPEN_RETRY_MS = 3 * 60 * 1000;
+const autoOpenTried = {};
+let autoOpening = false;
+
+function chatKey(url) {
+  const match = /^https:\/\/(?:www\.)?(?:chatgpt\.com\/c|claude\.ai\/chat)\/([0-9A-Za-z-]{8,})/.exec(url || "");
+  return match ? match[1] : null;
+}
+
+async function screenArea() {
+  try {
+    const win = await chrome.windows.getLastFocused();
+    if (win && win.width) return { left: win.left, top: win.top, width: win.width, height: win.height };
+  } catch (_) {}
+  return { left: 0, top: 0, width: 1440, height: 900 };
+}
+
+async function openForRun(project, site, url) {
+  const tabs = await chrome.tabs.query({ url: site === "claude" ? "https://claude.ai/*" : "https://chatgpt.com/*" });
+  const key = chatKey(url);
+  const existing = key && tabs.find((t) => chatKey(t.url) === key);
+  if (existing) {
+    await chrome.tabs.reload(existing.id);
+    await bindWhenReady(existing.id, project);
+    return;
+  }
+  const box = await screenArea();
+  const half = Math.floor(box.width / 2);
+  // Opened blank, then navigated: tools that watch new tabs (tests) attach first.
+  const win = await chrome.windows.create({
+    url: "about:blank", top: box.top, height: box.height, focused: true,
+    left: site === "claude" ? box.left : box.left + half,
+    width: site === "claude" ? half : box.width - half,
+  });
+  const tabId = win.tabs[0].id;
+  await sleep(500);
+  await chrome.tabs.update(tabId, { url });
+  await bindWhenReady(tabId, project);
+}
+
+async function autoOpen() {
+  if (autoOpening) return;
+  autoOpening = true;
+  try {
+    const { autoOpenTabs } = await chrome.storage.local.get({ autoOpenTabs: true });
+    if (!autoOpenTabs) return;
+    const res = await callDaemon("GET", "/v2/status");
+    if (!res.ok) return;
+    for (const rt of res.data.runtimes || []) {
+      const need = rt.status === "RUNNING" ? rt.missing_tab : null;
+      if (!need) continue;
+      const key = `${rt.project}:${need.site}`;
+      if (Date.now() - (autoOpenTried[key] || 0) < AUTO_OPEN_RETRY_MS) continue;
+      autoOpenTried[key] = Date.now();
+      const url = need.site === "claude"
+        ? rt.pm_conversation?.url || "https://claude.ai/new"
+        : rt.conversation?.url || "https://chatgpt.com/";
+      await openForRun(rt.project, need.site, url);
+    }
+  } catch (_) {
+    // best effort; the next check retries
+  } finally {
+    autoOpening = false;
+  }
+}
+
+chrome.alarms.create("relay-auto-open", { periodInMinutes: 0.5 });
+chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === "relay-auto-open") autoOpen(); });
+chrome.runtime.onStartup.addListener(autoOpen);
+chrome.runtime.onInstalled.addListener(autoOpen);
+if (RELAY_CONFIG.timing?.autoOpenCheckMs) setInterval(autoOpen, RELAY_CONFIG.timing.autoOpenCheckMs); // tests

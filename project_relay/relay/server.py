@@ -23,7 +23,8 @@ from .. import __version__, core
 from ..state import StateError
 from ..storage.database import RelayDatabase
 from . import config as relay_cfg
-from . import store
+from . import memory, store
+from .supervisor import Supervisor
 from .engine import RelayEngine, RelayRefused
 
 VERSION = __version__
@@ -80,11 +81,52 @@ def _events_payload(engine: RelayEngine, body: dict[str, Any]) -> dict[str, Any]
                        for e in events]}
 
 
+def _project_id(engine: RelayEngine, body: dict[str, Any]) -> str:
+    project = store.project_by_name(engine.db.conn, str(body.get("project") or "").strip())
+    if project is None:
+        raise ValueError(f"unknown project {body.get('project')!r}")
+    return project["id"]
+
+
+def _notes(engine: RelayEngine, body: dict[str, Any]) -> dict[str, Any]:
+    with engine.lock:
+        pid = _project_id(engine, body)
+        return {"notes": memory.active_notes(engine.db.conn, pid), "plan": memory.plan(engine.db.conn, pid)}
+
+
+def _notes_add(engine: RelayEngine, body: dict[str, Any]) -> dict[str, Any]:
+    with engine.lock, engine.db.transaction() as conn:
+        note_id = memory.add_note(conn, _project_id(engine, body), str(body.get("text") or ""), source="user")
+    return {"ok": True, "id": note_id}
+
+
+def _notes_remove(engine: RelayEngine, body: dict[str, Any]) -> dict[str, Any]:
+    with engine.lock, engine.db.transaction() as conn:
+        removed = memory.remove_note(conn, _project_id(engine, body), int(body["id"]))
+    return {"ok": removed}
+
+
+def _supervisor_state(engine: RelayEngine) -> dict[str, Any]:
+    sup = engine.supervisor
+    if sup is None:
+        return {"enabled": False}
+    with engine.lock:
+        used = sup.sends_today(engine.db.conn)
+    return {"enabled": True, "quiet": sup.is_quiet(), "quiet_hours": sup.cfg.get("quiet_hours", ""),
+            "sends_today": used, "budget": {"claude": sup.cfg.get("claude_daily_messages", 0),
+                                            "chatgpt": sup.cfg.get("chatgpt_daily_messages", 0)},
+            "stall_minutes": sup.cfg.get("stall_minutes")}
+
+
 def routes(engine: RelayEngine) -> dict[tuple[str, str], Callable[[dict[str, Any]], Any]]:
     return {
         ("GET", "/v2/health"): lambda b: {"ok": True, "version": VERSION},
         ("GET", "/v2/status"): lambda b: {"runtimes": engine.status()},
         ("GET", "/v2/events"): lambda b: _events_payload(engine, b),
+        ("GET", "/v2/notes"): lambda b: _notes(engine, b),
+        ("POST", "/v2/notes/add"): lambda b: _notes_add(engine, b),
+        ("POST", "/v2/notes/remove"): lambda b: _notes_remove(engine, b),
+        ("GET", "/v2/supervisor"): lambda b: _supervisor_state(engine),
         ("GET", "/v2/projects"): lambda b: {"projects": sorted(core.load_config().get("projects", {}))},
         ("POST", "/v2/browser/poll"): lambda b: engine.poll(
             lease=str(b.get("lease") or ""), page_url=b.get("page_url"), project=b.get("project") or None),
@@ -99,6 +141,8 @@ def routes(engine: RelayEngine) -> dict[tuple[str, str], Callable[[dict[str, Any
         ("POST", "/v2/browser/complete"): lambda b: engine.complete(
             lease=b["lease"], request_id=b["request_id"], assistant_turn_id=b["assistant_turn_id"],
             text=b["text"]),
+        ("POST", "/v2/browser/alive"): lambda b: engine.alive(
+            lease=str(b.get("lease") or ""), page_url=b.get("page_url"), project=b.get("project") or None),
         ("POST", "/v2/browser/diag"): lambda b: engine.diag(
             lease=b["lease"], request_id=b["request_id"], stage=str(b.get("stage") or ""),
             probe=b.get("probe") if isinstance(b.get("probe"), dict) else {}),
@@ -107,6 +151,8 @@ def routes(engine: RelayEngine) -> dict[tuple[str, str], Callable[[dict[str, Any
             message=str(b.get("message") or ""), evidence=b.get("evidence") or {}),
         ("POST", "/v2/control/start"): lambda b: _start_payload(engine, b),
         ("POST", "/v2/control/pause"): lambda b: engine.pause(b["project"]) or {"ok": True},
+        ("POST", "/v2/control/tell"): lambda b: engine.tell(
+            b["project"], str(b.get("text") or ""), remember=bool(b.get("remember"))),
         ("POST", "/v2/control/resume"): lambda b: engine.resume(b["project"], b.get("message")),
         ("POST", "/v2/control/stop"): lambda b: engine.stop(b["project"]) or {"ok": True},
     }
@@ -186,6 +232,7 @@ def serve(port: int | None = None) -> None:
     token = load_token()
     db = RelayDatabase(relay_cfg.DB_PATH, check_same_thread=False)
     engine = RelayEngine(db)
+    engine.supervisor = Supervisor(engine, core.load_config())
     server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(engine, token))
 
     relay_cfg.DAEMON_PID_PATH.write_text(f"{os.getpid()}\n", encoding="utf-8")
@@ -196,10 +243,12 @@ def serve(port: int | None = None) -> None:
     signal.signal(signal.SIGTERM, terminate)
     signal.signal(signal.SIGINT, terminate)
     engine.start_background()
+    engine.supervisor.start_background()
     print(f"prelayd {VERSION} listening on 127.0.0.1:{port} (db {relay_cfg.DB_PATH})", flush=True)
     try:
         server.serve_forever(poll_interval=0.5)
     finally:
+        engine.supervisor.shutdown()
         engine.shutdown()
         server.server_close()
         db.close()

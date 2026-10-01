@@ -21,6 +21,7 @@ from project_relay.relay import store
 from project_relay.relay.cli import EXTENSION_FILES, EXTENSION_SOURCE
 from project_relay.relay.engine import RelayEngine
 from project_relay.relay.server import make_handler
+from project_relay.relay.supervisor import Supervisor
 from project_relay.storage.database import RelayDatabase
 
 JS_DIR = Path(__file__).resolve().parent / "js"
@@ -39,13 +40,15 @@ def judge(project, root, cycles):
             "votes": [{"voter": "scripted", "verdict": "PROGRESS", "reason": "scripted", "model": None}]}
 
 
-def test_ade_end_to_end(tmp_path):
+@pytest.mark.parametrize("auto_open", [False, True], ids=["tabs-opened-by-test", "tabs-opened-by-relay"])
+def test_ade_end_to_end(tmp_path, auto_open):
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
 
     db = RelayDatabase(tmp_path / "relay.db", check_same_thread=False)
-    engine = RelayEngine(db, config={}, judge=judge)
+    engine = RelayEngine(db, config={"relay": {"tab_silent_seconds": 2}} if auto_open else {}, judge=judge)
+    engine.supervisor = Supervisor(engine, {"supervisor": {"notifications": False}})
     token = "e2e-token"
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(engine, token))
     port = httpd.server_address[1]
@@ -58,6 +61,8 @@ def test_ade_end_to_end(tmp_path):
         shutil.copy2(EXTENSION_SOURCE / name, ext / name)
     timing = {"trace": True, "acceptAfterSendMs": 8000, "acceptObservedMs": 5000, "acceptSettleMs": 800,
               "pollMs": 700, "probeEveryMs": 2000, "completion": {"stoppedMs": 600, "stableMs": 900}}
+    if auto_open:
+        timing["autoOpenCheckMs"] = 1500
     (ext / "relay-config.js").write_text(
         f"self.RELAY_CONFIG = {json.dumps({'port': port, 'token': token, 'timing': timing})};\n")
 
@@ -69,7 +74,8 @@ def test_ade_end_to_end(tmp_path):
         proc = subprocess.run(
             ["node", str(JS_DIR / "e2e/run-e2e-ade.mjs"), "--port", str(port), "--token", token,
              "--ext", str(ext), "--profile", str(tmp_path / "chrome-profile"), "--report", str(report_path),
-             "--timeout", "240000", "--screenshot", str(tmp_path / "dashboard.png")],
+             "--timeout", "240000", "--screenshot", str(tmp_path / "dashboard.png"),
+             "--auto-open", "1" if auto_open else "0"],
             cwd=JS_DIR, capture_output=True, text=True, timeout=420,
         )
     finally:
@@ -81,7 +87,7 @@ def test_ade_end_to_end(tmp_path):
     print(json.dumps({"final": report["final"], "sends": report["sends"]}, indent=2, ensure_ascii=False))
 
     # The PM declared the goal done after seeing the commit in the evidence.
-    assert report["final"]["status"] == "FINISHED", report["final"]
+    assert report["final"]["status"] == "FINISHED", (report["final"]["reason"], report["final"]["request"], report["sends"], report["chatPages"])
     log = subprocess.run(["git", "-C", str(repo), "log", "--oneline"], capture_output=True, text=True).stdout
     assert "add hello" in log and (repo / "hello.txt").read_text().strip() == "hello"
 
@@ -116,9 +122,21 @@ def test_ade_end_to_end(tmp_path):
 
     # The dashboard rendered the finished run, with no script errors.
     assert report["consoleErrors"] == [], report["consoleErrors"]
+    if auto_open:
+        # Nobody opened a tab: the extension opened one Claude and one ChatGPT window itself.
+        assert sorted(u.split("/")[2] for u in report["chatPages"]) == ["chatgpt.com", "claude.ai"], report["chatPages"]
+    else:
+        assert report["pmReloaded"]  # the Claude tab was reloaded mid-run and the run still finished
     text = report["dashboardText"]
     assert "Relay ADE" in text and "demo" in text and "Finished" in text and "prelayd running" in text
     assert "Sent (exactly once)." in text and "PM approved the command." in text  # timeline
     assert "chat #1" in text and "chat #2" not in text
+    # Memory, plan, KPIs and the supervisor bar.
+    assert "Project memory" in text and "1 note" in text and "plan · 2/2 done" in text.lower()
+    # The goal is folded to its first line with its size; the full text is inside the closed fold.
+    assert "Goal" in text and " chars" in text
+    assert "commands run" in text and "PM approvals" in text and "Supervisor: watching" in text
+    notes = [n["text"] for n in db.conn.execute("SELECT text FROM project_notes WHERE active = 1")]
+    assert notes == ["commit only the files a task names"]
     shutil.copy(tmp_path / "dashboard.png", os.environ.get("RELAY_E2E_SCREENSHOT", tmp_path / "keep.png"))
     db.close()

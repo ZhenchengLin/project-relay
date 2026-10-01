@@ -92,12 +92,19 @@ terminal the same is:
 prelay ade myapp --goal "Get the test suite green" --rules "Never push. Never touch uncommitted files."
 ```
 
+You do not need to pick chats or open tabs: with Chrome running, the extension
+opens a new Claude chat and a new ChatGPT chat for the run within ~30 s, and
+reopens them if they are closed (switch at the top of the dashboard). Long
+goals go in a file: `--goal-file plan.md`.
+
 | Command | What it does |
 |---|---|
 | `prelay status` | Every run: status, step, chats, cycle count |
 | `prelay log myapp` | Event log (add `--verbose` for browser diagnostics) |
 | `prelay pause myapp` / `prelay resume myapp [--message "…"]` / `prelay stop myapp` | Control a run |
+| `prelay tell myapp "The repo has a GitHub remote; push to relay/work" [--remember]` | Tell the PM something mid-run: it goes at the top of the PM's next message (also the **Tell the PM** box on each run card in the dashboard). `--remember` keeps it in project memory for every future chat. |
 | `prelay start myapp --url https://chatgpt.com/c/…` | Solo mode in an existing ChatGPT chat (or `--new-chat --seed "…"`) |
+| `prelay notes myapp [--add "…" \| --remove ID]` | Show/edit the project's memory and see its plan |
 | `prelay doctor` | Check the installation |
 | `prelay models --local-llm NAME --logic-model NAME` | Choose the Ollama judge models |
 | `prelay daemon` / `prelay stop-daemon` | Start/stop `prelayd` (e.g. after a reboot) |
@@ -110,6 +117,27 @@ prelay ade myapp --goal "Get the test suite green" --rules "Never push. Never to
 | `always` | every command (safest, uses the most Claude messages) |
 | `never` | nothing (the PM still sees every result) |
 
+## Supervisor, memory, plan and KPIs
+
+- **Alerts.** `prelayd` sends a desktop notification (macOS Notification
+  Center, or `notify-send` on Linux) when a run needs you, pauses, finishes,
+  or has had no activity for `stall_minutes`. Alerts also appear in the
+  dashboard timeline.
+- **Budgets and quiet hours.** Cap how many messages Relay sends to Claude and
+  ChatGPT per day (runs pause when a cap is reached), and set hours when Relay
+  sends nothing new (replies in progress and commands still finish).
+- **Project memory.** Facts a project must never forget. The PM (or the solo
+  chat) writes `RELAY_NOTE: …` lines; you add or remove notes in the dashboard
+  or with `prelay notes myapp --add "…"` / `--remove ID`. Active notes are put
+  into every new chat, so automatic chat rollovers keep them.
+- **Plan.** The PM keeps a checklist in a `RELAY_PLAN` block
+  (`- [ ] T1 …`, `[x]` done, `[~]` in progress, `[!]` blocked); the dashboard
+  shows progress.
+- **KPIs.** Each run card shows commands run, success rate, commands per hour,
+  average command time, loops caught, PM approvals and revisions, messages sent
+  to Claude and ChatGPT, chat rollovers and time since the last activity.
+  `prelay status` prints a one-line summary.
+
 ## Safety
 
 Relay runs AI-written commands on your machine. Read
@@ -117,7 +145,7 @@ Relay runs AI-written commands on your machine. Read
 
 - A message is sent **at most once**; anything re-sent is a new, logged request.
 - A reply is used only when it is **final**, never while a model is still writing.
-- **Cut-off scripts never run** (unclosed heredoc, `bash -n` error).
+- **Broken scripts never run.** Before running, Relay checks for a cut-off script (unclosed heredoc), bash and embedded-Python syntax errors, leftover Markdown fences, invisible characters, elided code and placeholders; the model is told exactly which line is wrong.
 - **Blocked outright:** `sudo`, `git reset --hard`, `git clean -f`, `git stash`,
   `git checkout --`, `git restore`, `git switch -f`, `git branch -D`, force
   push, `rm -rf ~`, disk formatting, … — also when written with `git -C dir` or
@@ -154,6 +182,13 @@ committed working tree, and give the PM explicit rules.
     "evidence_max_chars": 12000,
     "models": { "default_label": "", "strong_label": "Thinking" }
   },
+  "supervisor": {
+    "notifications": true,
+    "stall_minutes": 25,
+    "claude_daily_messages": 0,
+    "chatgpt_daily_messages": 0,
+    "quiet_hours": "23:00-07:00"
+  },
   "watchdog": {
     "ollama_url": "http://127.0.0.1:11434",
     "voters": [
@@ -164,6 +199,7 @@ committed working tree, and give the PM explicit rules.
 }
 ```
 
+Budgets of `0` mean unlimited; an empty `quiet_hours` disables quiet hours.
 `models.*_label` apply to solo mode: when the judges detect a loop, Relay
 switches ChatGPT's model picker to `strong_label`.
 

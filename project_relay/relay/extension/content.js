@@ -133,6 +133,7 @@
     busyWaitMs: 15 * 60 * 1000, // the chat is still generating when Relay arrives to send
     trace: false,               // tests: keep a status trace in sessionStorage
     probeEveryMs: 20000,        // diagnostics while waiting for a reply
+    aliveEveryMs: 20000,        // heartbeat, so the dashboard knows this tab is still here
     pollMs: 4000,
     completion: {},             // stoppedMs / stableMs / fallbackStableMs
   };
@@ -162,6 +163,7 @@
     port.onMessage.addListener(() => {
       for (const waiter of [...tickWaiters]) waiter();
       try { port.postMessage({ type: "tock" }); } catch (_) {}
+      heartbeat();
       if (active && !busy) run();
     });
     port.onDisconnect.addListener(() => {
@@ -201,6 +203,20 @@
   }
 
   const post = (path, body) => api("POST", path, { lease, ...body });
+
+  // Sent even while a long step (waiting for a reply) keeps the loop busy.
+  let lastAlive = 0;
+  function heartbeat() {
+    if (!active || Date.now() - lastAlive < T.aliveEveryMs) return;
+    lastAlive = Date.now();
+    post("/v2/browser/alive", { page_url: location.href, project: sessionStorage.getItem(PROJECT_KEY) || null })
+      .then((res) => { if (orphaned(res)) setStatus(ORPHANED); });
+  }
+
+  // After the extension is reloaded or updated, scripts in tabs that were
+  // already open can no longer reach it; only reloading the page fixes that.
+  const ORPHANED = "Project Relay was updated or reloaded. Reload this tab (⌘R / Ctrl+R) to reconnect; nothing is re-sent.";
+  const orphaned = (res) => res && res.status === 0 && /context invalidated/i.test(String(res.data?.error || ""));
 
   async function fail(job, code, message, evidence) {
     setStatus(`${code}: ${message || ""}`);
@@ -392,6 +408,87 @@
     });
   }
 
+  // Claude turns. claude.ai shows only the tail of a long chat (older messages
+  // load on scroll), so positions on the page mean nothing. The message Relay
+  // sent is found by its content (claudeSent); its reply is the first reply
+  // after it, before the next user message (claudeReplyAfter). claudeTurns is
+  // a positional view of what is rendered, for diagnostics and baselines only.
+  const CLAUDE_REPLY_MARK = `${CLAUDE.assistantSel}, ${CLAUDE.markdownSel}`;
+  const after = (a, b) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+
+  function claudeTurns() {
+    const users = outermost(document, CLAUDE.userSel);
+    const marks = outermost(document, CLAUDE_REPLY_MARK).filter((node) => !node.closest(CLAUDE.userSel));
+    let m = 0;
+    const replies = users.map((user, i) => {
+      while (m < marks.length && !after(user, marks[m])) m++;
+      const next = users[i + 1];
+      return m < marks.length && (!next || after(marks[m], next)) ? claudeReplyScope(marks[m]) : null;
+    });
+    return { users, replies };
+  }
+
+  function claudeReplyAfter(user) {
+    const next = outermost(document, CLAUDE.userSel).find((u) => after(user, u));
+    const mark = outermost(document, CLAUDE_REPLY_MARK).find(
+      (node) => !node.closest(CLAUDE.userSel) && after(user, node) && (!next || after(node, next)));
+    return mark ? claudeReplyScope(mark) : null;
+  }
+
+  // claude.ai renders a message as Markdown (fences, list numbers, emphasis
+  // disappear), so compare letters and digits only, at a dozen spots spread
+  // over the message: that tells a new evidence message from the previous one.
+  const claudeNorm = (text) => String(text || "").replace(/`{3}[\w-]*/g, "").replace(/[^\p{L}\p{N}]+/gu, "").toLowerCase();
+
+  function claudeMatcher(matchText) {
+    const n = claudeNorm(matchText);
+    const size = 24;
+    const count = 12;
+    const chunks = n.length <= size * 2 ? [n]
+      : Array.from({ length: count }, (_, i) => {
+        const at = Math.floor(((n.length - size) * i) / (count - 1));
+        return n.slice(at, at + size);
+      });
+    return { length: n.length, chunks };
+  }
+
+  function claudeMatch(matcher, el) {
+    const t = claudeNorm(el.textContent);
+    const hits = matcher.chunks.filter((c) => c && t.includes(c)).length;
+    return { ok: matcher.length > 0 && t.length >= 0.8 * matcher.length
+      && hits >= Math.ceil(matcher.chunks.length * 0.75), hits, chars: t.length };
+  }
+
+  // The newest user message, when it is the one this job sent.
+  function claudeSent(job) {
+    const users = outermost(document, CLAUDE.userSel);
+    const last = users[users.length - 1];
+    if (!last || !job.match_text) return null;
+    return claudeMatch(claudeMatcher(job.match_text), last).ok ? last : null;
+  }
+
+  function claudeDiagnostics(job) {
+    const users = outermost(document, CLAUDE.userSel);
+    const last = users[users.length - 1];
+    const matcher = claudeMatcher(job?.match_text || "");
+    const match = last ? claudeMatch(matcher, last) : { ok: false, hits: 0, chars: 0 };
+    return { users: users.length, match_chars: matcher.length, chunks: matcher.chunks.length,
+             last_user_chars: match.chars, last_user_hits: match.hits, last_user_matches: match.ok,
+             reply_after_last: Boolean(last && claudeReplyAfter(last)) };
+  }
+
+  // The whole reply turn: a live wrapper as is; otherwise the highest ancestor
+  // of the reply root that holds no user message.
+  function claudeReplyScope(mark) {
+    if (mark.matches(CLAUDE.assistantSel)) return mark;
+    let scope = mark;
+    while (scope.parentElement && scope.parentElement !== document.body
+           && !scope.parentElement.querySelector(CLAUDE.userSel)) {
+      scope = scope.parentElement;
+    }
+    return scope;
+  }
+
   function standaloneContainers() {
     return [...document.querySelectorAll("[data-turn-id-container]")].filter((el) => {
       if (el.closest("[data-turn-key]")) return false;
@@ -407,10 +504,10 @@
   // Claude: turns by position, claude:user:<n> / claude:assistant:<n>.
   function inventory() {
     if (SITE === CLAUDE) {
-      const users = outermost(document, CLAUDE.userSel);
-      const assistants = outermost(document, CLAUDE.assistantSel);
+      const { users, replies } = claudeTurns();
       return {
-        ids: [...users.map((_, i) => `claude:user:${i}`), ...assistants.map((_, i) => `claude:assistant:${i}`)],
+        ids: [...users.map((_, i) => `claude:user:${i}`),
+              ...replies.flatMap((reply, i) => (reply ? [`claude:assistant:${i}`] : []))],
         legacyUsers: [],
       };
     }
@@ -454,7 +551,7 @@
   function acceptedByServer(candidate) {
     if (!Core.conversationIdFromUrl(location.href)) return false;
     if (SITE !== CLAUDE) return true;
-    return outermost(document, CLAUDE.assistantSel).length > Core.claudeIndex(candidate);
+    return Boolean(claudeTurns().replies[Core.claudeIndex(candidate)]);
   }
 
   // Reply roots inside a turn scope, excluding the user's own message.
@@ -463,11 +560,16 @@
     return roots.length || SITE !== CLAUDE ? roots : [scope];
   }
 
-  function findAssistant(userTurnId) {
+  function findAssistant(userTurnId, job) {
+    if (Core.isClaudeRequestTurn(userTurnId)) {
+      const sent = claudeSent(job || {});
+      const reply = sent && claudeReplyAfter(sent);
+      return reply ? { id: Core.expectedAssistantId(userTurnId), scope: reply } : null;
+    }
     const index = Core.claudeIndex(userTurnId);
     if (index !== null) {
-      const container = outermost(document, CLAUDE.assistantSel)[index];
-      return container ? { id: `claude:assistant:${index}`, scope: container } : null;
+      const reply = claudeTurns().replies[index];
+      return reply ? { id: `claude:assistant:${index}`, scope: reply } : null;
     }
     const key = Core.groupKey(userTurnId);
     if (key) {
@@ -576,7 +678,10 @@
       site: SITE.name,
       streaming_attr: found ? found.scope.getAttribute("data-is-streaming") : null,
       user_count: outermost(document, SITE.userSel).length,
-      assistant_count: outermost(document, SITE.assistantSel).length,
+      assistant_count: SITE === CLAUDE ? claudeTurns().replies.filter(Boolean).length
+        : outermost(document, SITE.assistantSel).length,
+      streaming_marked: outermost(document, SITE.assistantSel).length,
+      claude: SITE === CLAUDE ? claudeDiagnostics(lastJob) : undefined,
       visibility: document.visibilityState,
       has_focus: document.hasFocus(),
     };
@@ -816,6 +921,10 @@
     }
 
     // The single Send activation for this request.
+    if (SITE === CLAUDE) {
+      const users = outermost(document, CLAUDE.userSel);
+      claudeBefore = { requestId: job.request_id, el: users[users.length - 1] || null };
+    }
     sessionStorage.setItem(SENT_PREFIX + job.request_id, String(Date.now()));
     (sendButton() || button).click();
     setStatus(`sent; waiting for ${SITE.label} to accept…`);
@@ -833,6 +942,7 @@
   }
 
   async function awaitAcceptance(job) {
+    if (SITE === CLAUDE && job.match_text) return awaitClaudeAcceptance(job);
     const sentHere = Number(sessionStorage.getItem(SENT_PREFIX + job.request_id)) || 0;
     const reloads = Number(sessionStorage.getItem(RELOAD_PREFIX + job.request_id)) || 0;
     const end = Date.now() + (sentHere ? T.acceptAfterSendMs : T.acceptObservedMs);
@@ -890,6 +1000,55 @@
     return null;
   }
 
+  // Claude: the newest user message must be the one this job sent (by content),
+  // must not be the message that was newest before our Send, and Claude must
+  // have started replying after it on a /chat/<id> page.
+  let claudeBefore = null;
+
+  async function awaitClaudeAcceptance(job) {
+    const sentHere = Number(sessionStorage.getItem(SENT_PREFIX + job.request_id)) || 0;
+    const reloads = Number(sessionStorage.getItem(RELOAD_PREFIX + job.request_id)) || 0;
+    const end = Date.now() + (sentHere ? T.acceptAfterSendMs : T.acceptObservedMs);
+    const before = claudeBefore && claudeBefore.requestId === job.request_id ? claudeBefore.el : null;
+    let since = 0;
+    while (Date.now() < end) {
+      const sent = claudeSent(job);
+      if (sent && sent !== before) {
+        if (!since) since = Date.now();
+        if (Date.now() - since >= T.acceptSettleMs && Core.conversationIdFromUrl(location.href) && claudeReplyAfter(sent)) {
+          const turn = Core.claudeRequestTurn(job.request_id, "user");
+          const reply = await post("/v2/browser/accepted", {
+            request_id: job.request_id, user_turn_id: turn, page_url: location.href,
+          });
+          if (reply.ok) {
+            setStatus("accepted; waiting for the reply…");
+            return turn;
+          }
+          setStatus(`acceptance refused: ${reply.data.error}`);
+          return null;
+        }
+      } else {
+        since = 0;
+        if (limitNotice() === "CONVERSATION_LIMIT") {
+          await fail(job, "CONVERSATION_LIMIT", "limit notice after send");
+          return null;
+        }
+      }
+      await sleep(500);
+    }
+    if (reloads < 1) {
+      sessionStorage.setItem(RELOAD_PREFIX + job.request_id, String(reloads + 1));
+      sessionStorage.removeItem(SENT_PREFIX + job.request_id);
+      setStatus("message not confirmed yet; reloading to check the server state…");
+      location.reload();
+      return null;
+    }
+    await fail(job, "NOT_PERSISTED", "The sent message is not the newest message in the Claude chat", {
+      url: location.href, claude: claudeDiagnostics(job),
+    });
+    return null;
+  }
+
   async function awaitReply(job, userTurn, boundAssistant) {
     const observe = Core.createCompletionTracker(T.completion);
     const end = Date.now() + T.replyTimeoutMs;
@@ -899,7 +1058,7 @@
       post("/v2/browser/diag", { request_id: job.request_id, stage, probe: probe(found) });
     while (Date.now() < end) {
       scrollToBottom();
-      const found = findAssistant(userTurn);
+      const found = findAssistant(userTurn, job);
       const notice = (found && noticeIn(found.scope)) || limitNotice();
       if (notice) {
         await fail(job, notice === "USAGE_LIMIT" ? "REPLY_FAILED" : notice, `error notice on the reply (${notice})`);
@@ -938,6 +1097,12 @@
           }
           return;
         }
+      } else {
+        setStatus(`looking for ${SITE.label}'s reply to ${userTurn} on this page…`);
+        if (Date.now() >= nextProbe) {
+          nextProbe = Date.now() + T.probeEveryMs;
+          await report(null, "searching");
+        }
       }
       await sleep(700);
     }
@@ -952,7 +1117,8 @@
       const project = sessionStorage.getItem(PROJECT_KEY) || null;
       const res = await post("/v2/browser/poll", { page_url: location.href, project });
       if (!res.ok) {
-        setStatus(res.status === 0 ? "prelayd is not running (prelay daemon)" : `daemon: ${res.data.error}`);
+        setStatus(orphaned(res) ? ORPHANED
+          : res.status === 0 ? "prelayd is not running (prelay daemon)" : `daemon: ${res.data.error}`);
         return;
       }
       const job = res.data;
@@ -1044,6 +1210,6 @@
 
   buildPanel();
   connect();
-  timingReady.then(() => setInterval(() => { if (active && !busy) run(); }, T.pollMs));
+  timingReady.then(() => setInterval(() => { heartbeat(); if (active && !busy) run(); }, T.pollMs));
   if (active) run();
 })();

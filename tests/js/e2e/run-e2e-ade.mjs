@@ -31,11 +31,14 @@ function planPm(prompt) {
     return { text: "The command only adds and commits hello.txt.\n\nRELAY_APPROVE" };
   }
   if (prompt.includes("Result of the Worker's command") && prompt.includes("add hello")) {
-    return { text: "The commit is in the log. Goal met.\n\nRELAY_DONE" };
+    return { text: "The commit is in the log. Goal met.\n\nRELAY_PLAN\n- [x] T1 Create hello.txt\n- [x] T2 Commit it\n"
+      + "END_RELAY_PLAN\n\nRELAY_DONE" };
   }
   if (prompt.includes("Project Relay ADE is starting")) {
     return {
-      text: "Plan: one small commit.\n\nRELAY_TASK\nCreate hello.txt containing the word hello, "
+      text: "Plan: one small commit.\n\nRELAY_NOTE: commit only the files a task names\n\n"
+        + "RELAY_PLAN\n- [~] T1 Create hello.txt\n- [ ] T2 Commit it\nEND_RELAY_PLAN\n\n"
+        + "RELAY_TASK\nCreate hello.txt containing the word hello, "
         + "commit only that file with the message 'add hello', then print git log -1 --oneline.\nEND_RELAY_TASK",
     };
   }
@@ -63,7 +66,9 @@ const CHROME = process.env.CHROME_PATH
   || (process.platform === "darwin" ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" : "google-chrome");
 const chromeProcess = spawn(CHROME, [
   `--user-data-dir=${args.profile}`, "--remote-debugging-port=0", "--enable-unsafe-extension-debugging",
-  "--headless=new", "--no-first-run", "--no-default-browser-check", "--disable-sync", "about:blank",
+  "--headless=new",
+  // Never reach the real sites: anything the mock does not intercept fails locally.
+  "--host-resolver-rules=MAP claude.ai 127.0.0.1:9, MAP chatgpt.com 127.0.0.1:9, MAP www.chatgpt.com 127.0.0.1:9", "--no-first-run", "--no-default-browser-check", "--disable-sync", "about:blank",
 ], { stdio: ["ignore", "ignore", "pipe"] });
 
 const devtoolsUrl = await new Promise((resolve, reject) => {
@@ -119,12 +124,22 @@ async function relayTab(url) {
   await page.reload();
   return page;
 }
-const pmPage = await relayTab("https://claude.ai/new");
-const workerPage = await relayTab("https://chatgpt.com/");
+// --auto-open 1: the test opens no tab; the extension must open both chats.
+const autoOpen = args["auto-open"] === "1";
+const pmPage = autoOpen ? null : await relayTab("https://claude.ai/new");
+const workerPage = autoOpen ? null : await relayTab("https://chatgpt.com/");
 
 const deadline = Date.now() + Number(args.timeout || 240000);
 let final = null;
+let pmReloaded = false;
 while (Date.now() < deadline) {
+  // Reload the Claude tab once the Worker has its task: the PM's next message
+  // (the review) must then be sent and read on a page whose earlier replies
+  // come from history, as after any reload on claude.ai.
+  if (pmPage && !pmReloaded && sends.some((s) => s.site === "chatgpt")) {
+    pmReloaded = true;
+    await pmPage.reload();
+  }
   const status = await daemon("/v2/status");
   const rt = status.runtimes?.[0];
   if (rt && rt.status !== "RUNNING") {
@@ -132,6 +147,14 @@ while (Date.now() < deadline) {
     break;
   }
   await new Promise((r) => setTimeout(r, 500));
+}
+
+if (!final) {
+  // Timed out: say where the run was, and what each tab last showed.
+  const status = await daemon("/v2/status").catch((e) => ({ error: String(e) }));
+  const panel = async (page) => !page ? null : page.evaluate(() => sessionStorage.getItem("projectRelayTrace") || document.title).catch(String);
+  console.error(JSON.stringify({ sends, request: status.runtimes?.[0]?.request, reason: status.runtimes?.[0]?.reason,
+                                 pm: await panel(pmPage), worker: await panel(workerPage) }, null, 1).slice(0, 6000));
 }
 
 // The pinned dashboard: must render the finished run without script errors.
@@ -145,11 +168,17 @@ await dashboard.waitForTimeout(3500);
 const dashboardText = await dashboard.evaluate(() => document.body.innerText);
 if (args.screenshot) await dashboard.screenshot({ path: args.screenshot, fullPage: true });
 
+// The chat pages, whether the test or the extension opened them.
+const chatPage = (host) => pmPage && host === "claude.ai" ? pmPage : workerPage && host === "chatgpt.com" ? workerPage
+  : context.pages().find((p) => p.url().includes(host));
+const claudeTab = chatPage("claude.ai");
+const chatgptTab = chatPage("chatgpt.com");
 await writeFile(args.report, JSON.stringify({
-  final, sends, dashboardText, consoleErrors,
-  claudeStore: JSON.parse((await pmPage.evaluate(() => localStorage.getItem("mock-claude-convs"))) || "{}"),
-  chatgptStore: JSON.parse((await workerPage.evaluate(() => localStorage.getItem("mock-convs"))) || "{}"),
-  pmUrl: pmPage.url(), workerUrl: workerPage.url(),
+  final, sends, dashboardText, consoleErrors, pmReloaded,
+  chatPages: context.pages().map((p) => p.url()).filter((u) => /claude\.ai|chatgpt\.com/.test(u)),
+  claudeStore: claudeTab ? JSON.parse((await claudeTab.evaluate(() => localStorage.getItem("mock-claude-convs"))) || "{}") : null,
+  chatgptStore: chatgptTab ? JSON.parse((await chatgptTab.evaluate(() => localStorage.getItem("mock-convs"))) || "{}") : null,
+  pmUrl: claudeTab?.url(), workerUrl: chatgptTab?.url(),
 }, null, 2));
 await browser.close();
 chromeProcess.kill();

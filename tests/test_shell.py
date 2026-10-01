@@ -94,7 +94,7 @@ def test_tab_stripped_heredoc_and_herestring():
 
 
 def test_unterminated_quote_fails_bash_n():
-    assert incomplete_reason("echo 'oops").startswith("bash -n")
+    assert "bash syntax error" in incomplete_reason("echo 'oops")
 
 
 @pytest.mark.parametrize("command", [
@@ -113,3 +113,56 @@ def test_git_global_options_do_not_bypass_the_guard(command):
 def test_git_global_options_still_allow_safe_commands():
     assert dangerous_reason("git -C repo status --short") is None
     assert dangerous_reason("git -c color.ui=never log -1") is None
+
+
+from project_relay.relay.shell import script_problems
+
+
+def test_clean_scripts_have_no_problems():
+    clean = [
+        "echo hi",
+        "bash <<'BASH'\nset -euo pipefail\npython3 - <<'PY'\nx = ...\nprint(x)\nPY\necho done\nBASH",
+        'echo "完成：“一步”"',                         # curly quotes inside a string are fine
+        "cat <<EOF > out.txt\nvalue=$HOME\nEOF",       # unquoted heredoc: not compiled as Python
+        "python3 - <<PY\nprint($x)\nPY",               # unquoted delimiter: shell expands, not checked
+        "sort < input.txt > output.txt",
+        "# the evaluation takes ... about 5 minutes\necho ok",
+    ]
+    for script in clean:
+        assert script_problems(script) == [], script
+
+
+def test_bash_syntax_error_names_the_line():
+    problems = script_problems("echo one\nif true; then\necho two\n")
+    assert problems and problems[0].startswith("line ") and "bash syntax error" in problems[0]
+
+
+def test_python_heredoc_syntax_error_is_found_with_script_line():
+    script = "echo start\npython3 - <<'PY'\nimport os\nprint(os.getcwd()\nPY\necho end"
+    problems = script_problems(script)
+    assert len(problems) == 1 and "Python syntax error in the PY block" in problems[0]
+    assert problems[0].startswith("line ")
+
+
+def test_python_block_inside_outer_bash_heredoc():
+    script = "bash <<'BASH'\npython3 -B - <<'PY'\ndef f(:\n    pass\nPY\nBASH"
+    assert any("Python syntax error" in p for p in script_problems(script))
+
+
+def test_chat_debris_is_reported_per_line():
+    script = "echo a\n```\necho\u00a0b\n# ... rest unchanged\ncp x /path/to/dest\nmkdir <your-folder>"
+    problems = script_problems(script)
+    text = " | ".join(problems)
+    assert "line 2: a Markdown code fence" in text
+    assert "line 3: contains a non-breaking space" in text
+    assert "line 4: part of the script is left out" in text
+    assert "line 5: contains a placeholder" in text and "line 6: contains a placeholder" in text
+
+
+def test_windows_line_endings_and_bare_ellipsis():
+    assert "Windows line endings" in script_problems("echo a\r\necho b\r\n")[0]
+    assert any("left out" in p for p in script_problems("echo a\n...\necho b"))
+
+
+def test_cut_off_script_still_reported_first():
+    assert script_problems("bash <<'BASH'\necho a")[0].startswith("heredoc 'BASH' is never closed")

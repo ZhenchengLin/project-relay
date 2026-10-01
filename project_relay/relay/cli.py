@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -110,12 +111,19 @@ def cmd_stop_daemon(args: Any) -> int:
         path.unlink(missing_ok=True)
         print("prelayd was not running (stale pid file removed).")
         return 0
+    # Wait until the process is gone (not only silent), so its port is free
+    # for a daemon started right after this.
     for _ in range(50):
-        if not daemon_alive(args.port):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
             print("prelayd stopped.")
             return 0
         time.sleep(0.2)
-    print("prelayd did not stop within 10s.", file=sys.stderr)
+    if not daemon_alive(args.port):
+        print("prelayd stopped answering, but its process has not exited yet.", file=sys.stderr)
+    else:
+        print("prelayd did not stop within 10s.", file=sys.stderr)
     return 1
 
 
@@ -169,8 +177,8 @@ def cmd_ade(args: Any) -> int:
     print(f"Relay ADE started for {args.project}.")
     print(f"  PM (claude.ai):      {result.get('pm_conversation_url') or 'a new Claude chat'}")
     print(f"  Worker (chatgpt.com): {result.get('conversation_url') or 'a new ChatGPT chat'}")
-    print("Open the Relay dashboard from the toolbar popup and click 'Arrange windows',")
-    print("or open both chats yourself and click 'Relay this tab' in each.")
+    print("Chrome (with the Project Relay extension) opens both chats by itself within ~30 s.")
+    print("If it does not, open the Relay dashboard from the toolbar popup and click 'Arrange windows'.")
     return 0
 
 
@@ -186,9 +194,23 @@ def _print_status(runtimes: list[dict[str, Any]]) -> None:
         print(f"  cycles {rt['cycle_count']}/{rt['max_cycles']}  model {rt['model_mode'].lower()}"
               f"  chat #{conv.get('chat_number')} {conv.get('url') or '(new chat)'}"
               f"  length {conv.get('char_count', 0)}/{conv.get('budget', '?')}")
+        k = rt.get("kpi") or {}
+        if k.get("commands"):
+            rate = k.get("success_rate")
+            print(f"  run: {k['commands']} commands, {round((rate or 0) * 100)}% ok, "
+                  + (f"{k['commands_per_hour']}/h, " if k.get("commands_per_hour") else "")
+                  + f"loops caught {k['loops_caught']}, rollovers {k['rollovers']}"
+                  + (f", plan {k['plan']['done']}/{k['plan']['total']}" if k.get("plan", {}).get("total") else ""))
         if req:
             print(f"  request {req['id']} {req['kind']} {req['state']}"
                   + (f" model={req['model']}" if req.get("model") else ""))
+        for text in rt.get("pending_human") or []:
+            print(f"  > waiting to tell the PM: {text[:120]}")
+        missing = rt.get("missing_tab")
+        if missing:
+            site = "Claude (claude.ai)" if missing["site"] == "claude" else "ChatGPT (chatgpt.com)"
+            print(f"  ! waiting for a {site} tab, but none is connected. The extension opens it within ~30 s;"
+                  " if not, click Arrange windows in the dashboard. Nothing is re-sent.")
 
 
 def cmd_status(args: Any) -> int:
@@ -209,6 +231,34 @@ def cmd_control(args: Any) -> int:
         body["message"] = args.message
     call("POST", f"/v2/control/{args.action}", body, port=args.port)
     print(f"{args.project}: {args.action} ok")
+    return 0
+
+
+def cmd_tell(args: Any) -> int:
+    result = call("POST", "/v2/control/tell", {"project": args.project, "text": args.text,
+                                                "remember": args.remember}, port=args.port)
+    print(f"{args.project}: added to the top of the PM's next message"
+          + (" (already queued, so it goes out right away)" if result.get("in_next_message_now") else "")
+          + ("; also kept in project memory." if args.remember else "."))
+    return 0
+
+
+def cmd_notes(args: Any) -> int:
+    if args.add:
+        call("POST", "/v2/notes/add", {"project": args.project, "text": args.add}, port=args.port)
+    if args.remove is not None:
+        call("POST", "/v2/notes/remove", {"project": args.project, "id": args.remove}, port=args.port)
+    data = call("GET", f"/v2/notes?project={urllib.parse.quote(args.project)}", port=args.port)
+    print(f"Project memory for {args.project}:")
+    for note in data["notes"] or []:
+        print(f"  #{note['id']:<4} {note['text']}  ({note['source']})")
+    if not data["notes"]:
+        print("  (none)")
+    if data["plan"]:
+        marks = {"done": "x", "doing": "~", "blocked": "!", "todo": " "}
+        print("Plan:")
+        for task in data["plan"]:
+            print(f"  [{marks.get(task['status'], ' ')}] {task['task_key']} {task['title']}")
     return 0
 
 
@@ -355,6 +405,20 @@ def add_commands(sub: Any) -> None:
         if action == "resume":
             p.add_argument("--message", help="Message to send to ChatGPT when resuming after a stop.")
         p.set_defaults(func=cmd_control, action=action)
+
+    p = rs.add_parser("tell", help="Tell the PM (or ChatGPT in solo mode) something; it arrives with "
+                                   "its next message, without pausing the run.")
+    p.add_argument("project")
+    p.add_argument("text")
+    p.add_argument("--remember", action="store_true",
+                   help="Also keep it in project memory, so every future chat gets it too.")
+    p.set_defaults(func=cmd_tell)
+
+    p = rs.add_parser("notes", help="Show, add or remove a project's memory notes (and see its plan).")
+    p.add_argument("project")
+    p.add_argument("--add", metavar="TEXT", help="Remember this fact in every future chat.")
+    p.add_argument("--remove", metavar="ID", type=int, help="Forget note #ID.")
+    p.set_defaults(func=cmd_notes)
 
     p = rs.add_parser("log", help="Recent Relay events for a project.")
     p.add_argument("project")

@@ -1,3 +1,99 @@
+## 2.4.1 — Tell the PM, in the dashboard
+
+- Each run card has a **Tell the PM** box (Tell ChatGPT in solo mode): type,
+  tick "Remember it for every future chat" if it is a lasting fact, press Send
+  or ⌘Enter. Messages waiting to go out are listed under it. The box keeps
+  what you type and the cursor across the 2-second refresh.
+
+## 2.4.0 — Tell the PM
+
+- `prelay tell PROJECT "…" [--remember]` and **Tell the PM…** on each run card:
+  a message for the planner (the PM, or ChatGPT in solo mode) that goes at the
+  top of its next message without pausing the run. If that message is queued
+  but not typed yet, it is replaced by the same message with yours on top (the
+  old one is cancelled, never edited). Also delivered with a kickoff or resume.
+  `--remember` also keeps it in project memory for every future chat.
+- Waiting messages show on the run card and in `prelay status`; the timeline
+  shows when they went out. API: `POST /v2/control/tell`; `pending_human` in
+  `/v2/status`.
+
+## 2.3.0 — Relay opens the chats itself
+
+- Start a run with just a goal (`prelay ade PROJECT --goal-file FILE`): when a
+  running step needs a Claude or ChatGPT tab and none is connected, the
+  extension opens it (the run's chat, or a new chat; Claude left, ChatGPT
+  right) and binds it to the run, and reopens or reloads it if it is closed or
+  cut off by an extension reload. Checked every 30 s; at most one attempt per
+  run and site every 3 minutes. Switch in the dashboard (on by default).
+- `relay.tab_silent_seconds` in config.json (default 90).
+- E2E: a run where the test opens no tab; the E2E Chrome maps claude.ai and
+  chatgpt.com to a dead local address so it can never reach the real sites.
+- Extension permission: `alarms`.
+
+## 2.2.4 — Claude messages found by content
+
+- Fix: claude.ai renders only the tail of a long chat (the previous reply, the
+  last message and its reply), so position-based turn ids ("message #3") were
+  wrong whenever a chat was longer than the page. The message Relay sent is now
+  recognised by its content (letters and digits at a dozen spots, so Markdown
+  rendering does not matter), must be the newest message and not the one that
+  was newest before Send; its reply is the first reply after it. Turn ids are
+  named after the request (`claude:user:r<request>`).
+- Claude jobs carry `match_text` (the message without the protocol block).
+- NOT_PERSISTED on Claude now reports what the page showed.
+- Checked on the 11 real PM messages: all recognised after Markdown rendering,
+  none confused with the previous message.
+- E2E mock renders only the tail of the chat and Markdown user messages.
+
+## 2.2.3 — Claude after a reload
+
+- Claude replies are paired with the user message before them instead of
+  being counted on their own (superseded by 2.2.4).
+- Resuming into a chat that never received its first message re-sends that
+  message instead of a bare note.
+- Tabs report a probe while they are still looking for a reply.
+- E2E: the Claude tab is reloaded mid-run; the mock renders history like
+  claude.ai.
+
+## 2.2.2 — Know when a chat tab is missing
+
+- Relay tabs send a heartbeat every 20 s, even during a long step. When a
+  run's current step needs a Claude or ChatGPT tab and none that could serve
+  it has been heard from for 90 s (closed, unloaded by Chrome, or cut off by
+  an extension reload), the dashboard card turns amber and says which tab to
+  open, `prelay status` prints it, and the supervisor sends one alert.
+- A tab whose script lost the extension after a reload/update now says
+  "reload this tab" instead of "prelayd is not running".
+- API: `POST /v2/browser/alive`; `missing_tab` in `/v2/status`.
+
+## 2.2.1 — Dashboard for long goals
+
+- Run cards fold the goal to its first line with its size (lines · chars);
+  expand to read the whole plan in its own scroll box, with a Copy button.
+  The fold and scroll position survive the 2-second refresh.
+- Run cards are laid out in two columns (goal, plan and last command | chats,
+  memory, activity), with Pause/Stop/Resume at the top.
+- Start form: a large goal box with a live size count, "Load from file…" for
+  the goal and the rules, and the optional chat URLs folded away.
+
+## 2.2.0 — Supervisor, memory, plan, KPIs
+
+- Supervisor inside prelayd: desktop alerts when a run needs you, pauses,
+  finishes or stalls; daily Claude/ChatGPT message budgets; quiet hours.
+- Project memory: `RELAY_NOTE:` lines from the PM (or solo chat) and notes you
+  add are injected into every kickoff, handoff and fresh chat
+  (`prelay notes`, dashboard).
+- Plan: the PM's `RELAY_PLAN` checklist, with progress in the dashboard.
+- KPIs per run in the dashboard and `prelay status`.
+- Schema v4 (project_notes, plan_tasks); API `/v2/notes`, `/v2/supervisor`.
+- Script checks before running (Layer 1), each reported to the model with its
+  line: unclosed heredocs, bash syntax errors, Python syntax errors inside
+  quoted `python … <<'PY'` blocks, a Markdown fence inside the script,
+  invisible characters, Windows line endings, elided code
+  (`# ... rest unchanged`), placeholders (`<your-path>`, `/path/to/`), and
+  shellcheck errors when shellcheck is installed. Replayed on 51 real
+  commands: only the one truly broken script is flagged.
+
 ## 2.1.2
 
 - Fix: if the chat is still generating when Relay arrives to send (Stop shown

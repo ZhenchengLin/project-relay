@@ -104,6 +104,9 @@ security). The ADE therefore uses:
 - **Arrange windows** — opens the PM (Claude) and Worker (ChatGPT) chats as
   two visible windows side by side and binds each to its project and role.
   Visible windows also avoid background-tab throttling, which stalls replies.
+- **Auto-open** — when a running step needs a Claude or ChatGPT tab and none
+  is connected (`missing_tab` in `/v2/status`), the extension opens that chat
+  (or a new one) and binds it, or reloads a tab on that chat that was cut off.
 
 ## Build phases
 

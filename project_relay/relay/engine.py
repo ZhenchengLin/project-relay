@@ -30,14 +30,17 @@ from typing import Any, Callable
 from .. import core
 from ..state import StateError, sha256_text, transition_request_in
 from ..storage.database import RelayDatabase
-from . import ade, prompts, store
+from . import ade, kpi, memory, prompts, store
 from .config import relay_config, watchdog_config
 from .runner import RunResult, run_bash
-from .shell import dangerous_reason, extract_shell_blocks, incomplete_reason
+from .shell import dangerous_reason, extract_shell_blocks, script_problems
 from .urls import ROLE_SITE, canonical_conversation_url, conversation_id, is_new_chat_page, site_of
 
 PROVISIONAL_USER_TURN = "group:user:pending-chatgpt-submit"
 LEASE_TTL_SECONDS = 45.0
+# A run whose current step needs a Claude/ChatGPT tab reports "no tab" after this
+# much silence from every tab that could serve it (tabs send a heartbeat every 20 s).
+TAB_SILENT_SECONDS = 90.0
 
 BROWSER_STATES = frozenset(
     {"QUEUED", "PREPARING_BROWSER", "READY_TO_SUBMIT", "SUBMITTING",
@@ -111,10 +114,15 @@ class RelayEngine:
         self.git = git
         self.clock = clock
         self._lease_seen: dict[str, float] = {}
+        self._tab_seen: dict[tuple[str, str], float] = {}  # (site, project or "*") -> last heard
+        self._started = clock()
+        self.tab_silent_seconds = float(self.cfg.get("tab_silent_seconds") or TAB_SILENT_SECONDS)
         self._executing: set[str] = set()
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._thread: threading.Thread | None = None
+        # Set by prelayd; consulted for quiet hours before handing out a send.
+        self.supervisor: Any = None
 
     # ================================================================ control
 
@@ -182,18 +190,23 @@ class RelayEngine:
                 if pm_conv is None:
                     pm_conv = store.create_conversation(conn, project_id=pid, url=pm_url, predecessor_id=None,
                                                         role="pm", site="claude")
+                kickoff, told = self._with_human(conn, pid, ade.pm_kickoff(
+                    project=name, root=root, goal=goal or seed or "", rules=rules, git=git_now,
+                    memory=memory.render(conn, pid)))
                 request_id = store.create_request(
                     conn, session_id=session_id, conversation_id=pm_conv["id"], kind="PM_PLAN", role="pm",
-                    prompt=ade.pm_kickoff(project=name, root=root, goal=goal or seed or "",
-                                          rules=rules, git=git_now),
-                    model=None,
+                    prompt=kickoff, model=None,
                 )
+                self._delivered(conn, pid, request_id, told)
             else:
+                remembered = memory.render(conn, pid)
+                seed_text = (seed or prompts.DEFAULT_SEED) + (f"\n\n{remembered}" if remembered else "")
+                seed_prompt, told = self._with_human(conn, pid, prompts.with_protocol(seed_text))
                 request_id = store.create_request(
                     conn, session_id=session_id, conversation_id=active["id"], kind="SEED",
-                    prompt=prompts.with_protocol(seed or prompts.DEFAULT_SEED),
-                    model=self._model_label(conn, pid) or None,
+                    prompt=seed_prompt, model=self._model_label(conn, pid) or None,
                 )
+                self._delivered(conn, pid, request_id, told)
         self._wake.set()
         return {"project": name, "session_id": session_id, "request_id": request_id, "mode": mode,
                 "conversation_url": active["conversation_url"],
@@ -224,10 +237,22 @@ class RelayEngine:
                 raise RelayRefused("No active conversation; use start.")
             text = message or "The human reviewed the situation. Continue from the latest evidence."
             prompt = text.rstrip() + "\n\n" + ade.PM_PROTOCOL + "\n" if role == "pm" else prompts.with_protocol(text)
+            kind = "USER"
+            # A chat that never received anything (its first message was not
+            # persisted) has no context: send that first message again, with
+            # the human's note, instead of a bare note.
+            opener = conn.execute(
+                "SELECT kind, prompt_text FROM requests WHERE conversation_id = ? ORDER BY sequence_number LIMIT 1",
+                (conv["id"],)).fetchone()
+            if conv["conversation_url"] is None and not conv["char_count"] and opener is not None:
+                kind = opener["kind"]
+                prompt = opener["prompt_text"] + (f"\n\nNote from the human: {message.strip()}\n" if message else "")
+            prompt, told = self._with_human(conn, pid, prompt)
             request_id = store.create_request(
-                conn, session_id=rt["session_id"], conversation_id=conv["id"], kind="USER", role=role,
+                conn, session_id=rt["session_id"], conversation_id=conv["id"], kind=kind, role=role,
                 prompt=prompt, model=None if role == "pm" else self._model_label(conn, pid) or None,
             )
+            self._delivered(conn, pid, request_id, told)
             if last and last["successor_request_id"] is None:
                 store.set_request_fields(conn, last["id"], successor_request_id=request_id)
             store.update_runtime(conn, pid, status="RUNNING", reason=None)
@@ -242,6 +267,58 @@ class RelayEngine:
                 transition_request_in(conn, request_id=last["id"], to_state="CANCELLED",
                                       payload={"reason": "stopped by user"})
             store.update_runtime(conn, pid, status="STOPPED", reason="Stopped by user.")
+
+    def tell(self, name: str, text: str, remember: bool = False) -> dict[str, Any]:
+        """Queue a message for the planner (the PM, or ChatGPT in solo mode): it goes at the top
+        of the planner's next message, without pausing the run. remember=True also keeps it
+        in project memory, so every future chat gets it."""
+        text = (text or "").strip()
+        if not text:
+            raise RelayRefused("Nothing to tell.")
+        with self.lock, self.db.transaction() as conn:
+            pid, rt = self._runtime_for(conn, name)
+            store.event(conn, project_id=pid, event_type="HUMAN_MESSAGE",
+                        payload={"text": text[:4000], "remember": bool(remember)})
+            if remember:
+                memory.add_note(conn, pid, text, source="user")
+            # The planner's next message is queued but not typed yet: replace it with
+            # the same message plus this one (prompts are never edited in place).
+            last = store.latest_request(conn, rt["session_id"]) if rt["session_id"] else None
+            planner = "pm" if rt["mode"] == "ade" else "worker"
+            now = bool(last and last["state"] == "QUEUED" and last["role"] == planner and last["kind"] != "HANDOFF")
+            if now:
+                prompt, told = self._with_human(conn, pid, last["prompt_text"])
+                transition_request_in(conn, request_id=last["id"], to_state="CANCELLED",
+                                      payload={"reason": "replaced to add a message from the human"})
+                replacement = store.create_request(
+                    conn, session_id=rt["session_id"], conversation_id=last["conversation_id"], kind=last["kind"],
+                    prompt=prompt, model=last["model"], role=last["role"], detail=last["detail"])
+                store.set_request_fields(conn, last["id"], successor_request_id=replacement)
+                self._delivered(conn, pid, replacement, told)
+        self._wake.set()
+        return {"queued": True, "remembered": bool(remember), "in_next_message_now": now}
+
+    @staticmethod
+    def _pending_human(conn, project_id: str) -> list[tuple[int, str]]:
+        delivered = conn.execute("SELECT COALESCE(MAX(id), 0) FROM events WHERE project_id = ? "
+                                 "AND event_type = 'HUMAN_MESSAGE_DELIVERED'", (project_id,)).fetchone()[0]
+        return [(row[0], json.loads(row[1])["text"]) for row in conn.execute(
+            "SELECT id, payload_json FROM events WHERE project_id = ? AND event_type = 'HUMAN_MESSAGE' "
+            "AND id > ? ORDER BY id", (project_id, delivered))]
+
+    def _with_human(self, conn, project_id: str, prompt: str) -> tuple[str, list[int]]:
+        """Put waiting human messages at the top of a planner prompt."""
+        pending = self._pending_human(conn, project_id)
+        if not pending:
+            return prompt, []
+        block = "\n".join(f"- {text}" for _, text in pending)
+        return (f"Message from the human (read this first, then continue):\n{block}\n\n{prompt}",
+                [event_id for event_id, _ in pending])
+
+    def _delivered(self, conn, project_id: str, request_id: str, ids: list[int]) -> None:
+        if ids:
+            store.event(conn, project_id=project_id, request_id=request_id,
+                        event_type="HUMAN_MESSAGE_DELIVERED", payload={"messages": ids})
 
     def status(self) -> list[dict[str, Any]]:
         with self.lock:
@@ -267,6 +344,9 @@ class RelayEngine:
                        JOIN requests r ON r.id = e.request_id WHERE r.session_id = ?
                        ORDER BY e.started_at DESC LIMIT 1""", (rt["session_id"],)).fetchone()
                 result.append({
+                    "kpi": kpi.run_kpis(conn, rt["project_id"], rt["session_id"]),
+                    "plan": memory.plan(conn, rt["project_id"]),
+                    "notes": len(memory.active_notes(conn, rt["project_id"])),
                     "project": rt["project_name"],
                     "root": rt["repository_root"],
                     "status": rt["status"],
@@ -274,6 +354,8 @@ class RelayEngine:
                     "mode": rt["mode"],
                     "goal": rt["goal"],
                     "review_policy": rt["review_policy"],
+                    "missing_tab": self.missing_tab(rt, last),
+                    "pending_human": [text for _, text in self._pending_human(conn, rt["project_id"])],
                     "model_mode": rt["model_mode"],
                     "cycle_count": rt["cycle_count"],
                     "max_cycles": rt["max_cycles"],
@@ -328,11 +410,42 @@ class RelayEngine:
         seen = self._lease_seen.get(lease or "")
         return seen is not None and self.clock() - seen < LEASE_TTL_SECONDS
 
+    def _heard(self, lease: str, page_url: str | None, project: str | None) -> None:
+        now = self.clock()
+        self._lease_seen[lease] = now
+        self._tab_seen[(site_of(page_url) or "chatgpt", project or "*")] = now
+
+    def alive(self, *, lease: str, page_url: str | None = None, project: str | None = None) -> dict[str, Any]:
+        """Heartbeat from a Relay tab, sent even while it is busy with a long step."""
+        if not lease:
+            raise RelayRefused("lease required")
+        with self.lock:
+            self._heard(lease, page_url, project)
+        return {"ok": True}
+
+    def missing_tab(self, rt: dict[str, Any], req: dict[str, Any] | None) -> dict[str, Any] | None:
+        """The tab a running step is waiting for, when no tab that could serve it is connected."""
+        if rt["status"] != "RUNNING" or not req or req["state"] not in BROWSER_STATES:
+            return None
+        now = self.clock()
+        if now - self._started < self.tab_silent_seconds:
+            return None
+        site = ROLE_SITE.get(req["role"], "chatgpt")
+        heard = [t for (tab_site, project), t in self._tab_seen.items()
+                 if tab_site == site and project in {rt["project_name"], "*"}]
+        if req["browser_lease"] in self._lease_seen:
+            heard.append(self._lease_seen[req["browser_lease"]])
+        last = max(heard, default=None)
+        if last is not None and now - last < self.tab_silent_seconds:
+            return None
+        return {"role": req["role"], "site": site,
+                "silent_seconds": None if last is None else int(now - last)}
+
     def poll(self, *, lease: str, page_url: str | None = None, project: str | None = None) -> dict[str, Any]:
         if not lease:
             raise RelayRefused("lease required")
         with self.lock:
-            self._lease_seen[lease] = self.clock()
+            self._heard(lease, page_url, project)
             role = "pm" if site_of(page_url) == "claude" else "worker"
             with self.db.transaction() as conn:
                 found = self._browser_request(conn, project, role)
@@ -342,6 +455,10 @@ class RelayEngine:
                 owner = req["browser_lease"]
                 if owner and owner != lease and self._lease_fresh(owner):
                     return {"type": "idle", "role": role, "reason": "Another tab owns this request."}
+                if (req["state"] in {"QUEUED", "PREPARING_BROWSER"} and self.supervisor is not None
+                        and self.supervisor.is_quiet()):
+                    return {"type": "idle", "role": role,
+                            "reason": "Quiet hours: Relay sends nothing new until they end."}
                 if req["state"] == "QUEUED":
                     transition_request_in(conn, request_id=req["id"], to_state="PREPARING_BROWSER",
                                           updates={"browser_lease": lease})
@@ -367,6 +484,10 @@ class RelayEngine:
                                assistant_turn_id=req["assistant_turn_id"])
                 else:
                     job.update(type="submit", prompt=req["prompt_text"])
+                if conv["site"] == "claude":
+                    # claude.ai shows only the tail of a long chat, so Claude turns are
+                    # found by content: the extension matches this text, not a position.
+                    job["match_text"] = ade.match_text(req["prompt_text"])
                 return job
 
     def _runtime_summary(self, conn) -> list[dict[str, Any]]:
@@ -374,6 +495,7 @@ class RelayEngine:
                 for r in store.all_runtimes(conn)]
 
     def _owned(self, conn, lease: str, request_id: str, states: set[str]) -> dict[str, Any]:
+        self._lease_seen[lease] = self.clock()
         req = store.get_request(conn, request_id)
         if req["browser_lease"] != lease:
             raise RelayRefused("This tab does not own the request.")
@@ -502,6 +624,7 @@ class RelayEngine:
     def diag(self, *, lease: str, request_id: str, stage: str, probe: dict[str, Any]) -> dict[str, Any]:
         """Store a structural DOM probe from the extension (bounded per request)."""
         with self.lock, self.db.transaction() as conn:
+            self._lease_seen[lease] = self.clock()
             req = store.get_request(conn, request_id)
             if req["browser_lease"] != lease:
                 raise RelayRefused("This tab does not own the request.")
@@ -645,6 +768,10 @@ class RelayEngine:
         conv = store.active_conversation(conn, rt["project_id"], role)
         if conv is None:
             raise StateError(f"No active {role} conversation.")
+        planner = "pm" if rt["mode"] == "ade" else "worker"
+        told: list[int] = []
+        if role == planner and kind != "HANDOFF":
+            prompt, told = self._with_human(conn, rt["project_id"], prompt)
         if role == "pm":
             label = ""
         else:
@@ -652,14 +779,18 @@ class RelayEngine:
         budget = int(self.cfg["rollover_char_budget"])
         if (kind not in {"HANDOFF", "ROLLOVER_SEED"} and conv["conversation_url"]
                 and conv["char_count"] + len(prompt) > budget):
-            return store.create_request(
+            request_id = store.create_request(
                 conn, session_id=rt["session_id"], conversation_id=conv["id"], kind="HANDOFF", role=role,
                 prompt=prompts.handoff_request(), model=label or None,
                 detail=json.dumps({"pending_prompt": prompt, "pending_kind": kind,
                                    "pending_model": label, "pending_detail": detail}),
             )
-        return store.create_request(conn, session_id=rt["session_id"], conversation_id=conv["id"],
-                                    kind=kind, prompt=prompt, model=label or None, role=role, detail=detail)
+        else:
+            request_id = store.create_request(conn, session_id=rt["session_id"], conversation_id=conv["id"],
+                                              kind=kind, prompt=prompt, model=label or None, role=role,
+                                              detail=detail)
+        self._delivered(conn, rt["project_id"], request_id, told)
+        return request_id
 
     def _finish_with(self, conn, rt, req, *, prompt: str, kind: str, model: str | None = None,
                      from_state: str = "ASSISTANT_COMPLETE", detail: str | None = None,
@@ -681,7 +812,8 @@ class RelayEngine:
         new = store.create_conversation(conn, project_id=rt["project_id"], url=None, predecessor_id=old["id"],
                                         role=role, site=old["site"])
         prompt = prompts.rollover_seed(chat_number=new["sequence_number"], handoff=handoff,
-                                       pending_prompt=pending_prompt)
+                                       pending_prompt=pending_prompt,
+                                       memory=memory.render(conn, rt["project_id"]))
         if role == "pm" and not pending_prompt.strip():
             prompt = prompts.without_protocol(prompt) + "\n\n" + ade.PM_PROTOCOL + "\n"
         return store.create_request(
@@ -704,12 +836,15 @@ class RelayEngine:
         git_before = None
         blocks = extract_shell_blocks(text)
         if (req["kind"] != "HANDOFF" and len(blocks) == 1 and not dangerous_reason(blocks[0])
-                and not incomplete_reason(blocks[0])):
+                and not script_problems(blocks[0])):
             git_before = self.git(self._root(rt))  # outside the DB transaction
 
         with self.lock, self.db.transaction() as conn:
             rt = store.runtime(conn, rt["project_id"]) | {"repository_root": rt["repository_root"],
                                                            "project_name": rt["project_name"]}
+            # Planner replies (the ADE PM, or the solo chat) may carry notes and a plan.
+            if req["role"] == "pm" or rt["mode"] != "ade":
+                memory.capture(conn, rt["project_id"], text, request_id=req["id"])
             if req["kind"] == "HANDOFF":
                 handoff = text
                 lines = text.splitlines()
@@ -751,13 +886,13 @@ class RelayEngine:
                            f"Reply contained {len(blocks)} bash blocks.")
             else:
                 danger = dangerous_reason(blocks[0])
-                broken = None if danger else incomplete_reason(blocks[0])
+                broken = [] if danger else script_problems(blocks[0])
                 if danger:
                     problem = ("danger", prompts.blocked_command_prompt(danger),
                                f"Safety guard blocked: {danger}.")
                 elif broken:
                     problem = ("incomplete", prompts.incomplete_script_prompt(broken),
-                               f"Script not run: {broken}.")
+                               "Script not run: " + "; ".join(broken)[:400])
             if problem:
                 _, nudge, reason = problem
                 used = self._consecutive(conn, rt, lambda r: r["kind"] == "NUDGE")

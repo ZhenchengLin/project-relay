@@ -120,3 +120,12 @@ test("usage limit notices", () => {
   assert.equal(Core.classifyNotice("You are out of free messages until 3 PM"), "USAGE_LIMIT");
   assert.equal(Core.classifyNotice("Your message will exceed the length limit for this chat."), "CONVERSATION_LIMIT");
 });
+
+test("claude turns found by content are named after their request", () => {
+  const user = Core.claudeRequestTurn("req-8a0ac3ce594c405c", "user");
+  assert.equal(user, "claude:user:r8a0ac3ce594c405c");
+  assert.equal(Core.isClaudeRequestTurn(user), true);
+  assert.equal(Core.isClaudeRequestTurn("claude:user:4"), false);
+  assert.equal(Core.expectedAssistantId(user), "claude:assistant:r8a0ac3ce594c405c");
+  assert.equal(Core.claudeIndex(user), null);
+});

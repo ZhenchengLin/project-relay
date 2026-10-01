@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .memory import PLANNER_HINT
+
 FENCE = "`" * 3
 
 DONE_MARKER = "RELAY_DONE"
@@ -18,6 +20,7 @@ PROTOCOL = f"""
 - Never claim success without evidence from the terminal output.
 - If human judgment is required, explain why and do not include a bash block.
 - When the whole project goal is finished and verified, reply with a line containing only {DONE_MARKER} and no bash block.
+{PLANNER_HINT}
 """.strip()
 
 
@@ -135,11 +138,17 @@ def blocked_command_prompt(reason: str) -> str:
     )
 
 
-def incomplete_script_prompt(reason: str) -> str:
+def incomplete_script_prompt(problems: list[str] | str) -> str:
+    if isinstance(problems, str):
+        problems = [problems]
+    listed = "\n".join(f"- {p}" for p in problems)
+    cut_off = any("never closed" in p for p in problems)
     return with_protocol(
-        f"[Relay] Relay did NOT run your last script: {reason}. A long reply can "
-        "arrive cut off. Please send the complete script again as exactly one bash "
-        "block (shorter is safer)."
+        "[Relay] Relay did NOT run your last script. Problems found before running it:\n"
+        f"{listed}\n\n"
+        + ("A long reply can arrive cut off; shorter is safer. " if cut_off else "")
+        + "Send the complete corrected script again as exactly one bash block. "
+        "Do not leave anything out and do not use placeholders."
     )
 
 
@@ -162,6 +171,7 @@ def rollover_seed(
     chat_number: int,
     handoff: str,
     pending_prompt: str,
+    memory: str = "",
 ) -> str:
     body = [
         f"[Project Relay] Continuation chat #{chat_number}. The previous chat reached "
@@ -172,6 +182,8 @@ def rollover_seed(
         handoff.strip(),
         "=== END HANDOFF ===",
     ]
+    if memory.strip():
+        body += ["", memory.strip()]
     if pending_prompt.strip():
         body += [
             "",

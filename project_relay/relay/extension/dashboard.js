@@ -4,7 +4,10 @@
 
 const $ = (id) => document.getElementById(id);
 const lastEventId = {};
+const notesOpen = {};
+const goalOpen = {};
 const timelines = {};
+let autoOpenTabs = true;
 
 function api(method, path, body) {
   return new Promise((resolve) => {
@@ -37,6 +40,13 @@ function stepText(rt) {
     HUMAN_REQUIRED: "Waiting for you.",
   }[rt.status];
   if (statusText) return statusText;
+  if (rt.missing_tab) {
+    const site = rt.missing_tab.site === "claude" ? "Claude (claude.ai)" : "ChatGPT (chatgpt.com)";
+    return autoOpenTabs
+      ? `Opening a ${site} window for this run… (if none appears, click Arrange windows). Nothing is re-sent.`
+      : `Waiting for a ${site} tab: none is connected. Click Arrange windows to open it`
+        + ` (or reload the tab if it is open). Nothing is re-sent.`;
+  }
   if (!req) return "Starting…";
   const s = req.state;
   if (req.kind === "HANDOFF") return `${who}'s chat is getting long: writing a handoff for a fresh chat.`;
@@ -87,6 +97,12 @@ function eventLine(e) {
     case "CONVERSATION_STARTED": return `New ${p.role === "pm" ? "Claude" : "ChatGPT"} chat${p.url ? "" : " (will open fresh)"}.`;
     case "CONVERSATION_RETIRED": return `Chat retired (${p.reason}).`;
     case "RECOVERY_SUCCESSOR": return `Recovered from ${p.code} with a new request.`;
+    case "SUPERVISOR_ALERT": return `⚑ ${p.message}`;
+    case "NOTE_ADDED": return `Remembered (${p.source}): ${p.text}`;
+    case "NOTE_REMOVED": return `Forgot note #${p.id}.`;
+    case "HUMAN_MESSAGE": return `You: “${String(p.text).slice(0, 160)}”${p.remember ? " (remembered)" : ""}`;
+    case "HUMAN_MESSAGE_DELIVERED": return `Your message${p.messages?.length > 1 ? "s" : ""} went out with the next message.`;
+    case "PLAN_UPDATED": return `Plan updated: ${p.done}/${p.tasks} done.`;
     default: return null;
   }
 }
@@ -135,50 +151,201 @@ function arrange(rt) {
   }, () => void chrome.runtime.lastError);
 }
 
+function tile(value, label) {
+  return el("div", { class: "tile" }, el("div", { class: "v" }, value), el("div", { class: "k" }, label));
+}
+
+function kpiTiles(k) {
+  if (!k || !k.started_at) return null;
+  const pct = (x) => (x === null || x === undefined ? "—" : `${Math.round(x * 100)}%`);
+  const idle = k.idle_seconds === null ? "—" : k.idle_seconds < 90 ? `${k.idle_seconds}s`
+    : k.idle_seconds < 5400 ? `${Math.round(k.idle_seconds / 60)}m` : `${Math.round(k.idle_seconds / 3600)}h`;
+  return el("div", { class: "kpis" },
+    tile(String(k.commands), "commands run"),
+    tile(pct(k.success_rate), "succeeded (exit 0)"),
+    tile(k.commands_per_hour === null ? "—" : String(k.commands_per_hour), "commands / hour"),
+    tile(k.avg_command_seconds === null ? "—" : `${k.avg_command_seconds}s`, "avg command time"),
+    tile(String(k.loops_caught), "loops caught"),
+    tile(k.reviews ? `${k.approved}/${k.reviews}` : "—", `PM approvals (${k.revised} revised)`),
+    tile(`${k.messages.pm} · ${k.messages.worker}`, "sent to Claude · ChatGPT"),
+    tile(String(k.rollovers), "chat rollovers"),
+    tile(idle, "since last activity"));
+}
+
+function planView(rt) {
+  const tasks = rt.plan || [];
+  if (!tasks.length) return null;
+  const done = tasks.filter((t) => t.status === "done").length;
+  const mark = { done: "✓", doing: "▸", blocked: "!", todo: "○" };
+  return el("div", { class: "plan" },
+    el("div", { class: "section" }, `Plan · ${done}/${tasks.length} done`),
+    el("div", { class: "bar" }, el("div", { style: `width:${Math.round((100 * done) / tasks.length)}%` })),
+    ...tasks.map((t) => el("div", { class: `st-${t.status}` }, `${mark[t.status] || "○"} ${t.task_key} ${t.title}`)));
+}
+
+async function notesView(rt) {
+  const res = await api("GET", `/v2/notes?project=${encodeURIComponent(rt.project)}`);
+  const notes = res.ok ? res.data.notes : [];
+  const add = async () => {
+    const text = prompt(`Something ${rt.project} must always remember:`);
+    if (text && text.trim()) {
+      await api("POST", "/v2/notes/add", { project: rt.project, text: text.trim() });
+      refresh();
+    }
+  };
+  const remove = async (note) => {
+    if (!confirm(`Forget: “${note.text}”?`)) return;
+    await api("POST", "/v2/notes/remove", { project: rt.project, id: note.id });
+    refresh();
+  };
+  const box = el("details", { class: "fold notes", ...(notesOpen[rt.project] ? { open: "" } : {}) },
+    el("summary", {}, el("span", { class: "label" }, "Project memory"),
+      el("span", { class: "headline muted" }, notes.length ? `${notes.length} note${notes.length === 1 ? "" : "s"}` : "empty")),
+    el("div", { class: "body" },
+      ...notes.map((n) => el("div", {}, `• ${n.text} `, el("span", { class: "muted" }, `(${n.source})`),
+        el("button", { onclick: () => remove(n), title: "Forget this" }, "×"))),
+      el("button", { class: "small", onclick: add }, "Add note…")));
+  box.addEventListener("toggle", () => { notesOpen[rt.project] = box.open; });
+  return box;
+}
+
+function sizeText(text) {
+  const lines = text.split("\n").length;
+  return `${lines} line${lines === 1 ? "" : "s"} · ${text.length.toLocaleString()} chars`;
+}
+
+// A long goal (a whole plan) folds to its first line; the full text scrolls inside the card.
+function goalView(rt) {
+  const text = (rt.goal || "").trim();
+  if (!text) return null;
+  const first = (text.split("\n").find((line) => line.trim()) || "")
+    .replace(/^[\s#>*\-]+/, "").replace(/[*`_]/g, "").trim();
+  const copy = el("button", {
+    class: "small",
+    onclick: async () => {
+      try { await navigator.clipboard.writeText(text); copy.textContent = "Copied"; } catch (_) { copy.textContent = "Copy failed"; }
+      setTimeout(() => { copy.textContent = "Copy"; }, 1500);
+    },
+  }, "Copy");
+  const box = el("details", { class: "fold", ...(goalOpen[rt.project] ? { open: "" } : {}) },
+    el("summary", { title: first },
+      el("span", { class: "label" }, rt.mode === "ade" ? "Goal" : "First message"),
+      el("span", { class: "headline" }, first),
+      el("span", { class: "size muted" }, sizeText(text))),
+    el("div", { class: "body" },
+      el("div", { class: "tools" }, copy),
+      el("pre", { class: "long", "data-scroll": `goal:${rt.project}` }, text)));
+  box.addEventListener("toggle", () => { goalOpen[rt.project] = box.open; });
+  return box;
+}
+
+// "Tell the PM": one composer per run, reused across the 2-second refresh so
+// what you are typing (and the cursor) survives it.
+const tellBoxes = {};
+
+function tellBox(rt, planner) {
+  let box = tellBoxes[rt.project];
+  if (!box) {
+    const input = el("textarea", { class: "tell-input", rows: "2", "aria-label": "Message for the planner" });
+    const remember = el("input", { type: "checkbox" });
+    const send = el("button", { class: "primary small" }, "Send");
+    const note = el("span", { class: "hint tell-note" });
+    const pending = el("div", { class: "tell-pending" });
+    const title = el("label", { class: "tell-title" });
+    const node = el("div", { class: "tell" },
+      title, input,
+      el("div", { class: "tell-row" },
+        el("label", { class: "switch tell-remember" }, remember, "Remember it for every future chat"),
+        note, send),
+      pending);
+    const submit = async () => {
+      const text = input.value.trim();
+      if (!text) return input.focus();
+      send.disabled = true;
+      const res = await api("POST", "/v2/control/tell", { project: rt.project, text, remember: remember.checked });
+      send.disabled = false;
+      if (!res.ok) {
+        note.textContent = res.data.error || "Could not send.";
+        return;
+      }
+      input.value = "";
+      remember.checked = false;
+      note.textContent = res.data.in_next_message_now ? "Added to the message going out now." : "Queued for its next message.";
+      refresh();
+    };
+    send.addEventListener("click", submit);
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); }
+    });
+    box = tellBoxes[rt.project] = { node, input, title, pending };
+  }
+  box.title.textContent = `Tell the ${planner}`;
+  box.input.placeholder = rt.mode === "ade"
+    ? "e.g. This project has a GitHub repo (origin). Push verified commits to main. — goes at the top of the PM's next message; the run keeps going (⌘Enter to send)"
+    : "e.g. Use the GitHub remote origin. — goes at the top of ChatGPT's next message (⌘Enter to send)";
+  const waiting = rt.pending_human || [];
+  box.pending.replaceChildren(...waiting.map((t) =>
+    el("div", { class: "tell-chip", title: t }, "Waiting to send: “", t.length > 160 ? t.slice(0, 157) + "…" : t, "”")));
+  // A placeholder: refresh() swaps the live composer in, in the same step as the redraw.
+  return el("span", { "data-tell": rt.project });
+}
+
 async function runCard(rt) {
   const events = await loadTimeline(rt.project);
+  const notes = await notesView(rt);
   const exec = rt.last_execution;
-  const card = el("div", { class: "panel card" },
+  const resume = () => {
+    const needsMessage = rt.status !== "PAUSED";
+    const message = needsMessage
+      ? prompt(`Message to the ${rt.mode === "ade" ? "PM (Claude)" : "ChatGPT"} when resuming (optional):`)
+      : null;
+    if (message === null && needsMessage) return;
+    if (!needsMessage && !confirm(`Resume ${rt.project}?`)) return;
+    control("resume", rt.project, message ? { message } : {});
+  };
+  const planner = rt.mode === "ade" ? "PM (Claude)" : "ChatGPT";
+  const card = el("div", { class: `panel card st-${rt.missing_tab ? "HUMAN_REQUIRED" : rt.status}` },
     el("div", { class: "head" },
-      el("h3", {}, rt.project, " ",
-        el("span", { class: `badge ${rt.mode === "ade" ? "pm" : "worker"}` }, rt.mode === "ade" ? "ADE" : "solo"), " ",
-        statusBadge(rt.status)),
-      el("span", { class: "muted" }, `command ${rt.cycle_count} of ${rt.max_cycles}`
-        + (rt.mode === "ade" ? ` · review: ${rt.review_policy}` : ""))),
+      el("div", {},
+        el("div", { class: "title" },
+          el("h3", {}, rt.project),
+          el("span", { class: `badge ${rt.mode === "ade" ? "pm" : "worker"}` }, rt.mode === "ade" ? "ADE" : "solo"),
+          statusBadge(rt.status)),
+        el("div", { class: "sub" }, `command ${rt.cycle_count} of ${rt.max_cycles}`
+          + (rt.mode === "ade" ? ` · review: ${rt.review_policy}` : ""), " · ", el("code", {}, rt.root))),
+      el("div", { class: "controls", style: "margin-top:0" },
+        el("div", { class: "left" },
+          rt.status === "RUNNING" ? el("button", { onclick: () => control("pause", rt.project) }, "Pause") : null,
+          ["RUNNING", "PAUSED", "HUMAN_REQUIRED"].includes(rt.status)
+            ? el("button", { class: "danger", onclick: () => confirm(`Stop ${rt.project}?`) && control("stop", rt.project) }, "Stop")
+            : null),
+        el("div", { class: "right" },
+          el("button", { onclick: () => arrange(rt) }, "Arrange windows"),
+          rt.status !== "RUNNING"
+            ? el("button", { class: "primary", onclick: resume }, rt.status === "PAUSED" ? "Resume" : "Resume with a message…")
+            : null))),
     el("div", { class: "step" }, stepText(rt)),
+    tellBox(rt, planner),
     rt.reason && rt.status !== "RUNNING"
       ? el("p", { class: rt.status === "FINISHED" || rt.status === "STOPPED" ? "muted" : "error" }, rt.reason)
       : null,
-    el("div", { class: "kv" },
-      rt.goal ? [el("span", { class: "muted" }, "Goal"), el("span", {}, rt.goal)] : [],
-      rt.mode === "ade" ? [el("span", { class: "muted" }, "PM (Claude)"), chatLink(rt.pm_conversation, "Claude")] : [],
-      [el("span", { class: "muted" }, rt.mode === "ade" ? "Worker (ChatGPT)" : "ChatGPT"), chatLink(rt.conversation, "ChatGPT")],
-      [el("span", { class: "muted" }, "Repository"), el("code", {}, rt.root)]),
-    exec ? el("div", {},
-      el("p", { class: "muted" }, `Last command · ${exec.completed_at ? "exit " + exec.return_code : "running…"}`),
-      el("pre", {}, exec.command_head)) : null,
-    el("div", { class: "controls" },
-      el("div", { class: "left" },
-        rt.status === "RUNNING" ? el("button", { onclick: () => control("pause", rt.project) }, "Pause") : null,
-        ["RUNNING", "PAUSED", "HUMAN_REQUIRED"].includes(rt.status)
-          ? el("button", { class: "danger", onclick: () => confirm(`Stop ${rt.project}?`) && control("stop", rt.project) }, "Stop")
-          : null),
-      el("div", { class: "right" },
-        el("button", { onclick: () => arrange(rt) }, "Arrange windows"),
-        rt.status !== "RUNNING" ? el("button", {
-          class: "primary",
-          onclick: () => {
-            const needsMessage = rt.status !== "PAUSED";
-            const message = needsMessage
-              ? prompt(`Message to the ${rt.mode === "ade" ? "PM (Claude)" : "ChatGPT"} when resuming (optional):`)
-              : null;
-            if (message === null && needsMessage) return;
-            if (!needsMessage && !confirm(`Resume ${rt.project}?`)) return;
-            control("resume", rt.project, message ? { message } : {});
-          },
-        }, rt.status === "PAUSED" ? "Resume" : "Resume with a message…") : null)),
-    el("div", { class: "timeline" }, ...events.slice(-15).reverse().map((line) =>
-      el("div", {}, el("time", {}, line.at.slice(11, 19)), line.text))));
+    kpiTiles(rt.kpi),
+    el("div", { class: "cols" },
+      el("div", {},
+        goalView(rt),
+        planView(rt),
+        exec ? [
+          el("div", { class: "section" }, `Last command · ${exec.completed_at ? "exit " + exec.return_code : "running…"}`),
+          el("pre", {}, exec.command_head)] : null),
+      el("div", {},
+        el("div", { class: "section" }, "Chats"),
+        el("div", { class: "kv" },
+          rt.mode === "ade" ? [el("span", { class: "muted" }, "PM (Claude)"), chatLink(rt.pm_conversation, "Claude")] : [],
+          [el("span", { class: "muted" }, rt.mode === "ade" ? "Worker (ChatGPT)" : "ChatGPT"), chatLink(rt.conversation, "ChatGPT")]),
+        notes,
+        el("div", { class: "section" }, "Activity"),
+        el("div", { class: "timeline", "data-scroll": `timeline:${rt.project}` }, ...events.slice(-30).reverse().map((line) =>
+          el("div", {}, el("time", {}, line.at.slice(11, 19)), line.text))))));
   return card;
 }
 
@@ -191,9 +358,35 @@ async function refresh() {
   }
   $("daemon").textContent = "prelayd running";
   $("daemon").className = "badge ok";
+  const sup = await api("GET", "/v2/supervisor");
+  if (sup.ok && sup.data.enabled) {
+    const s = sup.data;
+    const cap = (used, max) => (max ? `${used}/${max}` : `${used}`);
+    $("supervisor").textContent = `Supervisor: ${s.quiet ? "quiet hours now — no new messages" : "watching"}`
+      + ` · today sent to Claude ${cap(s.sends_today.claude, s.budget.claude)}`
+      + `, ChatGPT ${cap(s.sends_today.chatgpt, s.budget.chatgpt)}`
+      + (s.quiet_hours ? ` · quiet hours ${s.quiet_hours}` : "");
+  }
   const runtimes = status.data.runtimes.filter((rt) => rt.status !== "STOPPED" || timelines[rt.project]);
   const cards = await Promise.all(runtimes.map(runCard));
+  const scrolled = [...document.querySelectorAll("[data-scroll]")].map((n) => [n.dataset.scroll, n.scrollTop]);
+  // Everything from here to the end is synchronous, so no keystroke is lost.
+  const focused = document.activeElement;
+  const selection = focused && focused.classList.contains("tell-input")
+    ? [focused.selectionStart, focused.selectionEnd] : null;
   $("runs").replaceChildren(...(cards.length ? cards : [el("p", { class: "muted" }, "No runs yet. Start one below.")]));
+  for (const [key, top] of scrolled) {
+    const node = document.querySelector(`[data-scroll="${CSS.escape(key)}"]`);
+    if (node) node.scrollTop = top;
+  }
+  for (const slot of document.querySelectorAll("[data-tell]")) {
+    const box = tellBoxes[slot.dataset.tell];
+    if (box) slot.replaceWith(box.node);
+  }
+  if (selection && focused.isConnected) {
+    focused.focus({ preventScroll: true });
+    focused.setSelectionRange(...selection);
+  }
 }
 
 // ------------------------------------------------------------- start form
@@ -226,6 +419,25 @@ async function start(arrangeAfter) {
   refresh();
 }
 
+function showCount(id) {
+  const text = $(id).value.trim();
+  $(`${id}-count`).textContent = text ? sizeText(text) : "";
+}
+
+let loadTarget = null;
+for (const button of document.querySelectorAll("[data-load]")) {
+  button.addEventListener("click", () => { loadTarget = button.dataset.load; $("file-picker").click(); });
+}
+$("file-picker").addEventListener("change", async () => {
+  const file = $("file-picker").files[0];
+  if (file && loadTarget) {
+    $(loadTarget).value = await file.text();
+    showCount(loadTarget);
+  }
+  $("file-picker").value = "";
+});
+for (const id of ["goal", "rules"]) $(id).addEventListener("input", () => showCount(id));
+
 $("start").addEventListener("click", () => start(false));
 $("start-arrange").addEventListener("click", () => start(true));
 
@@ -237,6 +449,16 @@ try {
     try { localStorage.setItem("relay-about-open", about.open ? "1" : "0"); } catch (_) {}
   });
 } catch (_) {}
+
+chrome.storage.local.get({ autoOpenTabs: true }, (v) => {
+  autoOpenTabs = v.autoOpenTabs;
+  $("auto-open").checked = autoOpenTabs;
+});
+$("auto-open").addEventListener("change", () => {
+  autoOpenTabs = $("auto-open").checked;
+  chrome.storage.local.set({ autoOpenTabs });
+  refresh();
+});
 
 loadProjects();
 refresh();
