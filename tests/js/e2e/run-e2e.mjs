@@ -77,6 +77,8 @@ const chromeProcess = spawn(CHROME, [
   "--remote-debugging-port=0",
   "--enable-unsafe-extension-debugging",
   "--headless=new",
+  // Never reach the real sites: anything the mock does not intercept fails locally.
+  "--host-resolver-rules=MAP claude.ai 127.0.0.1:9, MAP chatgpt.com 127.0.0.1:9, MAP www.chatgpt.com 127.0.0.1:9",
   "--no-first-run",
   "--no-default-browser-check",
   "--disable-sync",

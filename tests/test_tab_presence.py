@@ -92,8 +92,8 @@ def test_supervisor_alerts_once_per_missing_tab_episode(env):
     engine.start(name="demo", root=root, mode="ade", goal="G", conversation_url=WORKER_URL, pm_conversation_url=PM_URL)
     sup.check()
     clock.t += TAB_SILENT_SECONDS + 5
-    assert sup.check() == ["demo is waiting for a Claude tab, but none is connected. "
-                           "Open the dashboard and click Arrange windows."]
+    assert sup.check() == ["demo is waiting for a Claude tab, but none is connected. Relay is opening one; "
+                           "if it does not appear, click Arrange windows in the dashboard."]
     assert sup.check() == []
     engine.poll(lease="p", page_url=PM_URL)
     assert sup.check() == []

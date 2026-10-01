@@ -40,13 +40,14 @@ def judge(project, root, cycles):
             "votes": [{"voter": "scripted", "verdict": "PROGRESS", "reason": "scripted", "model": None}]}
 
 
-def test_ade_end_to_end(tmp_path):
+@pytest.mark.parametrize("auto_open", [False, True], ids=["tabs-opened-by-test", "tabs-opened-by-relay"])
+def test_ade_end_to_end(tmp_path, auto_open):
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
 
     db = RelayDatabase(tmp_path / "relay.db", check_same_thread=False)
-    engine = RelayEngine(db, config={}, judge=judge)
+    engine = RelayEngine(db, config={"relay": {"tab_silent_seconds": 2}} if auto_open else {}, judge=judge)
     engine.supervisor = Supervisor(engine, {"supervisor": {"notifications": False}})
     token = "e2e-token"
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(engine, token))
@@ -60,6 +61,8 @@ def test_ade_end_to_end(tmp_path):
         shutil.copy2(EXTENSION_SOURCE / name, ext / name)
     timing = {"trace": True, "acceptAfterSendMs": 8000, "acceptObservedMs": 5000, "acceptSettleMs": 800,
               "pollMs": 700, "probeEveryMs": 2000, "completion": {"stoppedMs": 600, "stableMs": 900}}
+    if auto_open:
+        timing["autoOpenCheckMs"] = 1500
     (ext / "relay-config.js").write_text(
         f"self.RELAY_CONFIG = {json.dumps({'port': port, 'token': token, 'timing': timing})};\n")
 
@@ -71,7 +74,8 @@ def test_ade_end_to_end(tmp_path):
         proc = subprocess.run(
             ["node", str(JS_DIR / "e2e/run-e2e-ade.mjs"), "--port", str(port), "--token", token,
              "--ext", str(ext), "--profile", str(tmp_path / "chrome-profile"), "--report", str(report_path),
-             "--timeout", "240000", "--screenshot", str(tmp_path / "dashboard.png")],
+             "--timeout", "240000", "--screenshot", str(tmp_path / "dashboard.png"),
+             "--auto-open", "1" if auto_open else "0"],
             cwd=JS_DIR, capture_output=True, text=True, timeout=420,
         )
     finally:
@@ -83,7 +87,7 @@ def test_ade_end_to_end(tmp_path):
     print(json.dumps({"final": report["final"], "sends": report["sends"]}, indent=2, ensure_ascii=False))
 
     # The PM declared the goal done after seeing the commit in the evidence.
-    assert report["final"]["status"] == "FINISHED", report["final"]
+    assert report["final"]["status"] == "FINISHED", (report["final"]["reason"], report["final"]["request"], report["sends"], report["chatPages"])
     log = subprocess.run(["git", "-C", str(repo), "log", "--oneline"], capture_output=True, text=True).stdout
     assert "add hello" in log and (repo / "hello.txt").read_text().strip() == "hello"
 
@@ -118,7 +122,11 @@ def test_ade_end_to_end(tmp_path):
 
     # The dashboard rendered the finished run, with no script errors.
     assert report["consoleErrors"] == [], report["consoleErrors"]
-    assert report["pmReloaded"]  # the Claude tab was reloaded mid-run and the run still finished
+    if auto_open:
+        # Nobody opened a tab: the extension opened one Claude and one ChatGPT window itself.
+        assert sorted(u.split("/")[2] for u in report["chatPages"]) == ["chatgpt.com", "claude.ai"], report["chatPages"]
+    else:
+        assert report["pmReloaded"]  # the Claude tab was reloaded mid-run and the run still finished
     text = report["dashboardText"]
     assert "Relay ADE" in text and "demo" in text and "Finished" in text and "prelayd running" in text
     assert "Sent (exactly once)." in text and "PM approved the command." in text  # timeline

@@ -1,3 +1,16 @@
+## 2.3.0 — Relay opens the chats itself
+
+- Start a run with just a goal (`prelay ade PROJECT --goal-file FILE`): when a
+  running step needs a Claude or ChatGPT tab and none is connected, the
+  extension opens it (the run's chat, or a new chat; Claude left, ChatGPT
+  right) and binds it to the run, and reopens or reloads it if it is closed or
+  cut off by an extension reload. Checked every 30 s; at most one attempt per
+  run and site every 3 minutes. Switch in the dashboard (on by default).
+- `relay.tab_silent_seconds` in config.json (default 90).
+- E2E: a run where the test opens no tab; the E2E Chrome maps claude.ai and
+  chatgpt.com to a dead local address so it can never reach the real sites.
+- Extension permission: `alarms`.
+
 ## 2.2.4 — Claude messages found by content
 
 - Fix: claude.ai renders only the tail of a long chat (the previous reply, the

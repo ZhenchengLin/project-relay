@@ -13,4 +13,4 @@ try:
 
 except PackageNotFoundError:
     # Source-tree fallback before installation; keep in sync with pyproject.toml.
-    __version__ = "2.2.4"
+    __version__ = "2.3.0"

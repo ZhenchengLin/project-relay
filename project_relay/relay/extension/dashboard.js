@@ -7,6 +7,7 @@ const lastEventId = {};
 const notesOpen = {};
 const goalOpen = {};
 const timelines = {};
+let autoOpenTabs = true;
 
 function api(method, path, body) {
   return new Promise((resolve) => {
@@ -41,8 +42,10 @@ function stepText(rt) {
   if (statusText) return statusText;
   if (rt.missing_tab) {
     const site = rt.missing_tab.site === "claude" ? "Claude (claude.ai)" : "ChatGPT (chatgpt.com)";
-    return `Waiting for a ${site} tab: none is connected. Click Arrange windows to open it`
-      + ` (or reload the tab if it is open). Nothing is re-sent.`;
+    return autoOpenTabs
+      ? `Opening a ${site} window for this run… (if none appears, click Arrange windows). Nothing is re-sent.`
+      : `Waiting for a ${site} tab: none is connected. Click Arrange windows to open it`
+        + ` (or reload the tab if it is open). Nothing is re-sent.`;
   }
   if (!req) return "Starting…";
   const s = req.state;
@@ -379,6 +382,16 @@ try {
     try { localStorage.setItem("relay-about-open", about.open ? "1" : "0"); } catch (_) {}
   });
 } catch (_) {}
+
+chrome.storage.local.get({ autoOpenTabs: true }, (v) => {
+  autoOpenTabs = v.autoOpenTabs;
+  $("auto-open").checked = autoOpenTabs;
+});
+$("auto-open").addEventListener("change", () => {
+  autoOpenTabs = $("auto-open").checked;
+  chrome.storage.local.set({ autoOpenTabs });
+  refresh();
+});
 
 loadProjects();
 refresh();

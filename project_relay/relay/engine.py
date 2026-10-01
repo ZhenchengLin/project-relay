@@ -116,6 +116,7 @@ class RelayEngine:
         self._lease_seen: dict[str, float] = {}
         self._tab_seen: dict[tuple[str, str], float] = {}  # (site, project or "*") -> last heard
         self._started = clock()
+        self.tab_silent_seconds = float(self.cfg.get("tab_silent_seconds") or TAB_SILENT_SECONDS)
         self._executing: set[str] = set()
         self._stop = threading.Event()
         self._wake = threading.Event()
@@ -369,7 +370,7 @@ class RelayEngine:
         if rt["status"] != "RUNNING" or not req or req["state"] not in BROWSER_STATES:
             return None
         now = self.clock()
-        if now - self._started < TAB_SILENT_SECONDS:
+        if now - self._started < self.tab_silent_seconds:
             return None
         site = ROLE_SITE.get(req["role"], "chatgpt")
         heard = [t for (tab_site, project), t in self._tab_seen.items()
@@ -377,7 +378,7 @@ class RelayEngine:
         if req["browser_lease"] in self._lease_seen:
             heard.append(self._lease_seen[req["browser_lease"]])
         last = max(heard, default=None)
-        if last is not None and now - last < TAB_SILENT_SECONDS:
+        if last is not None and now - last < self.tab_silent_seconds:
             return None
         return {"role": req["role"], "site": site,
                 "silent_seconds": None if last is None else int(now - last)}

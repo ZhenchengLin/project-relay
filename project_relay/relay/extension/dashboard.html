@@ -81,6 +81,8 @@
   .st-done { color: var(--ok); } .st-doing { color: var(--accent); } .st-blocked { color: var(--bad); }
   .notes button { padding: 0 6px; font-size: 11px; margin-left: 6px; }
   #supervisor { margin-top: 6px; font-size: 13px; }
+  label.switch { display: flex; gap: 8px; align-items: center; font-weight: 400; font-size: 13px; color: var(--muted); margin: 6px 0 0; }
+  label.switch input { width: auto; margin: 0; }
   .card .title { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .card .title h3 { margin: 0; font-size: 17px; }
   .card .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
@@ -126,6 +128,8 @@
     <div id="daemon" class="badge">checking prelayd…</div>
   </div>
   <div id="supervisor" class="muted"></div>
+  <label class="switch"><input type="checkbox" id="auto-open" checked>
+    Open Claude and ChatGPT by themselves: when a run needs a chat that is not open, Relay opens it (and reopens it if it is closed).</label>
 
   <h2>Runs</h2>
   <div id="runs"><p class="muted">Loading…</p></div>
@@ -196,7 +200,7 @@
         </ul>
         <h2>Tips</h2>
         <ul class="tight">
-          <li>Use <b>Arrange windows</b>: Claude and ChatGPT side by side and visible. Hidden tabs make both sites slow down replies.</li>
+          <li>Relay opens the Claude and ChatGPT chats a run needs by itself (switch at the top); <b>Arrange windows</b> does it on demand. Keep them visible: hidden tabs make both sites slow down replies.</li>
           <li>Two loop verdicts in a row stop the run for you.</li>
           <li>Long chats roll over automatically: the model writes a handoff and Relay continues in a new chat.</li>
           <li>Automating chatgpt.com and claude.ai is unofficial; keep a human pace.</li>

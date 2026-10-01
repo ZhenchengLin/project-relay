@@ -143,7 +143,8 @@ class Supervisor:
                     self._no_tab.add(name)
                     site = "Claude" if missing["site"] == "claude" else "ChatGPT"
                     alerts.append(self._alert(conn, rt, f"{name} is waiting for a {site} tab, but none is "
-                                              "connected. Open the dashboard and click Arrange windows."))
+                                              "connected. Relay is opening one; if it does not appear, click "
+                                              "Arrange windows in the dashboard."))
                 elif not missing:
                     self._no_tab.discard(name)
                 stalled = self._is_stalled(conn, rt) if status == "RUNNING" else False

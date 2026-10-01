@@ -92,6 +92,11 @@ terminal the same is:
 prelay ade myapp --goal "Get the test suite green" --rules "Never push. Never touch uncommitted files."
 ```
 
+You do not need to pick chats or open tabs: with Chrome running, the extension
+opens a new Claude chat and a new ChatGPT chat for the run within ~30 s, and
+reopens them if they are closed (switch at the top of the dashboard). Long
+goals go in a file: `--goal-file plan.md`.
+
 | Command | What it does |
 |---|---|
 | `prelay status` | Every run: status, step, chats, cycle count |

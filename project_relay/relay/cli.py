@@ -170,8 +170,8 @@ def cmd_ade(args: Any) -> int:
     print(f"Relay ADE started for {args.project}.")
     print(f"  PM (claude.ai):      {result.get('pm_conversation_url') or 'a new Claude chat'}")
     print(f"  Worker (chatgpt.com): {result.get('conversation_url') or 'a new ChatGPT chat'}")
-    print("Open the Relay dashboard from the toolbar popup and click 'Arrange windows',")
-    print("or open both chats yourself and click 'Relay this tab' in each.")
+    print("Chrome (with the Project Relay extension) opens both chats by itself within ~30 s.")
+    print("If it does not, open the Relay dashboard from the toolbar popup and click 'Arrange windows'.")
     return 0
 
 
@@ -200,8 +200,8 @@ def _print_status(runtimes: list[dict[str, Any]]) -> None:
         missing = rt.get("missing_tab")
         if missing:
             site = "Claude (claude.ai)" if missing["site"] == "claude" else "ChatGPT (chatgpt.com)"
-            print(f"  ! waiting for a {site} tab, but none is connected: open the dashboard and click "
-                  "Arrange windows (or reload the tab). Nothing is re-sent.")
+            print(f"  ! waiting for a {site} tab, but none is connected. The extension opens it within ~30 s;"
+                  " if not, click Arrange windows in the dashboard. Nothing is re-sent.")
 
 
 def cmd_status(args: Any) -> int:
