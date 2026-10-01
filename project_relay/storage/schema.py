@@ -1,4 +1,4 @@
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 MIGRATION_1_SQL = r'''
 CREATE TABLE projects (
@@ -240,4 +240,14 @@ CREATE TABLE plan_tasks (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (project_id, task_key)
 );
+'''
+
+
+# V5: ADE pace. 'step' = the PM decides every command (the 2.x behaviour);
+# 'milestone' = the PM assigns a milestone, the Worker works through it on its
+# own and the PM checks in when it is done, blocked, looping, or every
+# checkin_every commands.
+MIGRATION_5_SQL = r'''
+ALTER TABLE project_runtime ADD COLUMN pace TEXT NOT NULL DEFAULT 'step';
+ALTER TABLE project_runtime ADD COLUMN checkin_every INTEGER NOT NULL DEFAULT 8;
 '''

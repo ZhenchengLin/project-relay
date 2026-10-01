@@ -63,9 +63,11 @@ def _start_payload(engine: RelayEngine, body: dict[str, Any]) -> dict[str, Any]:
         mode=str(body.get("mode") or "solo"),
         goal=body.get("goal") or None,
         rules=str(body.get("rules") or ""),
-        review_policy=str(body.get("review_policy") or "risky"),
+        review_policy=body.get("review_policy") or None,
         pm_conversation_url=body.get("pm_conversation_url") or None,
         pm_new_chat=bool(body.get("pm_new_chat")),
+        pace=body.get("pace") or None,
+        checkin_every=body.get("checkin_every") or None,
     )
 
 
@@ -151,6 +153,8 @@ def routes(engine: RelayEngine) -> dict[tuple[str, str], Callable[[dict[str, Any
             message=str(b.get("message") or ""), evidence=b.get("evidence") or {}),
         ("POST", "/v2/control/start"): lambda b: _start_payload(engine, b),
         ("POST", "/v2/control/pause"): lambda b: engine.pause(b["project"]) or {"ok": True},
+        ("POST", "/v2/control/pace"): lambda b: engine.set_pace(
+            b["project"], str(b.get("pace") or ""), b.get("checkin_every") or None),
         ("POST", "/v2/control/tell"): lambda b: engine.tell(
             b["project"], str(b.get("text") or ""), remember=bool(b.get("remember"))),
         ("POST", "/v2/control/resume"): lambda b: engine.resume(b["project"], b.get("message")),

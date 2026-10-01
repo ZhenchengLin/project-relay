@@ -191,24 +191,28 @@ def put_runtime(
     mode: str = "solo",
     goal: str | None = None,
     review_policy: str = "risky",
+    pace: str = "step",
+    checkin_every: int = 8,
 ) -> None:
     conn.execute(
         """
         INSERT INTO project_runtime (project_id, session_id, status, reason, model_mode,
                                      progress_streak, cycle_count, max_cycles, updated_at,
-                                     mode, goal, review_policy)
-        VALUES (?, ?, 'RUNNING', NULL, 'DEFAULT', 0, 0, ?, ?, ?, ?, ?)
+                                     mode, goal, review_policy, pace, checkin_every)
+        VALUES (?, ?, 'RUNNING', NULL, 'DEFAULT', 0, 0, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(project_id) DO UPDATE SET
             session_id = excluded.session_id, status = 'RUNNING', reason = NULL,
             model_mode = 'DEFAULT', progress_streak = 0, cycle_count = 0,
             max_cycles = excluded.max_cycles, updated_at = excluded.updated_at,
-            mode = excluded.mode, goal = excluded.goal, review_policy = excluded.review_policy
+            mode = excluded.mode, goal = excluded.goal, review_policy = excluded.review_policy,
+            pace = excluded.pace, checkin_every = excluded.checkin_every
         """,
-        (project_id, session_id, max_cycles, utc_now(), mode, goal, review_policy),
+        (project_id, session_id, max_cycles, utc_now(), mode, goal, review_policy, pace, checkin_every),
     )
 
 
-RUNTIME_FIELDS = frozenset({"status", "reason", "model_mode", "progress_streak", "cycle_count"})
+RUNTIME_FIELDS = frozenset({"status", "reason", "model_mode", "progress_streak", "cycle_count", "pace",
+                            "checkin_every"})
 
 
 def update_runtime(conn: sqlite3.Connection, project_id: str, **fields: Any) -> None:

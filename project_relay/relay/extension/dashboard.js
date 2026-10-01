@@ -56,7 +56,10 @@ function stepText(rt) {
   }
   if (["SUBMITTING", "PROMPT_ACCEPTED", "WAITING_ASSISTANT", "ASSISTANT_BOUND"].includes(s)) {
     if (req.kind === "PM_REVIEW") return "PM (Claude) is reviewing a risky command before it runs.";
-    return req.role === "pm" ? "PM (Claude) is deciding the next step." : "Worker (ChatGPT) is writing the command.";
+    if (req.role === "pm") return rt.pace === "milestone" ? "PM (Claude) is checking in: reviewing progress and deciding how to push forward."
+      : "PM (Claude) is deciding the next step.";
+    if (rt.pace === "milestone") return `Worker (ChatGPT) is working on its milestone (${rt.since_checkin} of ${rt.checkin_every} commands before the next PM check-in).`;
+    return "Worker (ChatGPT) is writing the command.";
   }
   if (s === "ASSISTANT_COMPLETE") return `Reading the ${who}'s reply.`;
   if (["COMMAND_VALIDATED", "RUNNING_CLI"].includes(s)) return "Running the command on your Mac.";
@@ -77,6 +80,7 @@ function eventLine(e) {
     case "REQUEST_CREATED": {
       const who = p.role === "pm" ? "PM" : "Worker";
       const what = { PM_PLAN: "planning message", PM_REVIEW: "review request", TASK: "task", REVISE: "revision",
+                     ASSIGN: "milestone assignment", GUIDE: "PM guidance",
                      NUDGE: "format reminder", HANDOFF: "handoff request", ROLLOVER_SEED: "fresh-chat seed",
                      SEED: "first message", USER: "your message", CYCLE: "evidence", RETRY: "retry" }[p.kind] || p.kind;
       return `Queued ${what} for the ${who}.`;
@@ -98,6 +102,10 @@ function eventLine(e) {
     case "CONVERSATION_RETIRED": return `Chat retired (${p.reason}).`;
     case "RECOVERY_SUCCESSOR": return `Recovered from ${p.code} with a new request.`;
     case "SUPERVISOR_ALERT": return `⚑ ${p.message}`;
+    case "PM_CHECKIN": return `PM check-in (${{ MILESTONE_DONE: "milestone done", BLOCKED: "worker blocked", CONCERN: "worker concern",
+      LOOP: "loop", PERIODIC: "periodic", NO_COMMAND: "no usable command", HUMAN: "your message" }[p.reason] || p.reason}`
+      + `, ${p.commands} command${p.commands === 1 ? "" : "s"} since the last one).`;
+    case "PACE_CHANGED": return `Pace: ${p.pace}${p.pace === "milestone" ? ` (check-in every ${p.checkin_every})` : ""}.`;
     case "NOTE_ADDED": return `Remembered (${p.source}): ${p.text}`;
     case "NOTE_REMOVED": return `Forgot note #${p.id}.`;
     case "HUMAN_MESSAGE": return `You: “${String(p.text).slice(0, 160)}”${p.remember ? " (remembered)" : ""}`;
@@ -214,6 +222,29 @@ function sizeText(text) {
   return `${lines} line${lines === 1 ? "" : "s"} · ${text.length.toLocaleString()} chars`;
 }
 
+function paceSwitch(rt) {
+  const select = el("select", { class: "pace-switch", title: "How the PM works on this run" },
+    el("option", { value: "milestone", ...(rt.pace === "milestone" ? { selected: "" } : {}) }, "milestones"),
+    el("option", { value: "step", ...(rt.pace === "step" ? { selected: "" } : {}) }, "every step"));
+  select.addEventListener("change", async () => {
+    const res = await api("POST", "/v2/control/pace", { project: rt.project, pace: select.value });
+    if (!res.ok) alert(res.data.error || "Could not change the pace.");
+    refresh();
+  });
+  return el("span", {}, "pace: ", select);
+}
+
+// The Worker's current milestone (milestone pace), folded like the goal.
+function milestoneView(rt) {
+  const text = (rt.assignment || "").trim();
+  if (rt.mode !== "ade" || rt.pace !== "milestone" || !text) return null;
+  const first = (text.split("\n").find((l) => l.trim()) || "").replace(/^[\s#>*\-]+/, "").trim();
+  return el("details", { class: "fold" },
+    el("summary", { title: first }, el("span", { class: "label" }, "Milestone"),
+      el("span", { class: "headline" }, first), el("span", { class: "size muted" }, sizeText(text))),
+    el("div", { class: "body" }, el("pre", { class: "long" }, text)));
+}
+
 // A long goal (a whole plan) folds to its first line; the full text scrolls inside the card.
 function goalView(rt) {
   const text = (rt.goal || "").trim();
@@ -312,7 +343,8 @@ async function runCard(rt) {
           el("span", { class: `badge ${rt.mode === "ade" ? "pm" : "worker"}` }, rt.mode === "ade" ? "ADE" : "solo"),
           statusBadge(rt.status)),
         el("div", { class: "sub" }, `command ${rt.cycle_count} of ${rt.max_cycles}`
-          + (rt.mode === "ade" ? ` · review: ${rt.review_policy}` : ""), " · ", el("code", {}, rt.root))),
+          + (rt.mode === "ade" ? ` · review: ${rt.review_policy} · ` : ""),
+          rt.mode === "ade" ? paceSwitch(rt) : null, " · ", el("code", {}, rt.root))),
       el("div", { class: "controls", style: "margin-top:0" },
         el("div", { class: "left" },
           rt.status === "RUNNING" ? el("button", { onclick: () => control("pause", rt.project) }, "Pause") : null,
@@ -333,6 +365,7 @@ async function runCard(rt) {
     el("div", { class: "cols" },
       el("div", {},
         goalView(rt),
+        milestoneView(rt),
         planView(rt),
         exec ? [
           el("div", { class: "section" }, `Last command · ${exec.completed_at ? "exit " + exec.return_code : "running…"}`),
@@ -407,6 +440,7 @@ async function start(arrangeAfter) {
   const workerUrl = $("worker-url").value.trim() || null;
   const res = await api("POST", "/v2/control/start", {
     project, mode: "ade", goal, rules: $("rules").value.trim(), review_policy: $("review").value,
+    pace: $("pace").value, checkin_every: Number($("checkin").value) || 8,
     max_cycles: Number($("max").value) || null,
     pm_conversation_url: pmUrl, pm_new_chat: !pmUrl,
     conversation_url: workerUrl, new_chat: !workerUrl,
@@ -437,6 +471,11 @@ $("file-picker").addEventListener("change", async () => {
   $("file-picker").value = "";
 });
 for (const id of ["goal", "rules"]) $(id).addEventListener("input", () => showCount(id));
+
+$("pace").addEventListener("change", () => {
+  $("review").value = $("pace").value === "milestone" ? "push" : "risky";
+  $("checkin").disabled = $("pace").value !== "milestone";
+});
 
 $("start").addEventListener("click", () => start(false));
 $("start-arrange").addEventListener("click", () => start(true));

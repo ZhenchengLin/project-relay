@@ -171,10 +171,13 @@ def cmd_ade(args: Any) -> int:
     result = call("POST", "/v2/control/start", {
         "project": args.project, "mode": "ade", "goal": goal, "rules": args.rules or "",
         "review_policy": args.review, "max_cycles": args.max_cycles,
+        "pace": args.pace, "checkin_every": args.checkin_every,
         "conversation_url": args.worker_url, "new_chat": args.worker_new_chat,
         "pm_conversation_url": args.pm_url, "pm_new_chat": not args.pm_url,
     }, port=args.port)
-    print(f"Relay ADE started for {args.project}.")
+    print(f"Relay ADE started for {args.project} ({result.get('pace')} pace, review: {result.get('review_policy')}"
+          + (f", PM checks in at least every {result.get('checkin_every')} commands" if result.get("pace") == "milestone" else "")
+          + ").")
     print(f"  PM (claude.ai):      {result.get('pm_conversation_url') or 'a new Claude chat'}")
     print(f"  Worker (chatgpt.com): {result.get('conversation_url') or 'a new ChatGPT chat'}")
     print("Chrome (with the Project Relay extension) opens both chats by itself within ~30 s.")
@@ -204,6 +207,9 @@ def _print_status(runtimes: list[dict[str, Any]]) -> None:
         if req:
             print(f"  request {req['id']} {req['kind']} {req['state']}"
                   + (f" model={req['model']}" if req.get("model") else ""))
+        if rt.get("mode") == "ade" and rt.get("pace") == "milestone":
+            print(f"  milestone pace: {rt.get('since_checkin', 0)}/{rt.get('checkin_every')} commands since the PM's last "
+                  "message" + (f"; milestone: {rt['assignment'].splitlines()[0][:100]}" if rt.get("assignment") else ""))
         for text in rt.get("pending_human") or []:
             print(f"  > waiting to tell the PM: {text[:120]}")
         missing = rt.get("missing_tab")
@@ -231,6 +237,15 @@ def cmd_control(args: Any) -> int:
         body["message"] = args.message
     call("POST", f"/v2/control/{args.action}", body, port=args.port)
     print(f"{args.project}: {args.action} ok")
+    return 0
+
+
+def cmd_pace(args: Any) -> int:
+    result = call("POST", "/v2/control/pace", {"project": args.project, "pace": args.pace,
+                                                "checkin_every": args.checkin_every}, port=args.port)
+    print(f"{args.project}: {result['pace']} pace"
+          + (f", PM checks in at least every {result['checkin_every']} commands" if result["pace"] == "milestone" else "")
+          + ". The PM is told with its next message.")
     return 0
 
 
@@ -385,8 +400,16 @@ def add_commands(sub: Any) -> None:
     goal.add_argument("--goal", help="What the PM should achieve.")
     goal.add_argument("--goal-file")
     p.add_argument("--rules", help="Rules the PM must always enforce (e.g. 'never push').")
-    p.add_argument("--review", choices=["risky", "always", "never"], default="risky",
-                   help="Which commands the PM must approve before they run (default: risky).")
+    p.add_argument("--pace", choices=["milestone", "step"], default="milestone",
+                   help="milestone (default): the PM assigns a milestone, ChatGPT works through it on its own and "
+                        "the PM checks in when it is done, blocked, looping or every --checkin-every commands. "
+                        "step: the PM decides every command.")
+    p.add_argument("--checkin-every", type=int, default=8, metavar="N",
+                   help="Milestone pace: the PM checks in at least every N commands (default 8).")
+    p.add_argument("--review", choices=["push", "risky", "always", "never"],
+                   help="Which commands the PM must approve before they run. push: only pushes, merges, "
+                        "GitHub changes, recursive deletes, curl|sh (default with milestone pace); risky: also "
+                        "commits, deletes, moves, installs (default with step pace).")
     p.add_argument("--pm-url", help="Existing claude.ai chat for the PM (default: a new chat).")
     worker = p.add_mutually_exclusive_group()
     worker.add_argument("--worker-url", help="Existing chatgpt.com chat for the Worker.")
@@ -405,6 +428,12 @@ def add_commands(sub: Any) -> None:
         if action == "resume":
             p.add_argument("--message", help="Message to send to ChatGPT when resuming after a stop.")
         p.set_defaults(func=cmd_control, action=action)
+
+    p = rs.add_parser("pace", help="Switch a running Relay ADE run between milestone and step pace.")
+    p.add_argument("project")
+    p.add_argument("pace", choices=["milestone", "step"])
+    p.add_argument("--checkin-every", type=int, metavar="N", help="Milestone pace: PM checks in every N commands.")
+    p.set_defaults(func=cmd_pace)
 
     p = rs.add_parser("tell", help="Tell the PM (or ChatGPT in solo mode) something; it arrives with "
                                    "its next message, without pausing the run.")

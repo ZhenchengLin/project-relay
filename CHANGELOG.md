@@ -1,3 +1,26 @@
+## 2.5.0 — Milestone pace: Claude plans and checks in, ChatGPT does the work
+
+- New ADE pace, **milestone** (default): Claude agrees a plan and assigns a
+  milestone (`RELAY_ASSIGN … END_RELAY_ASSIGN`, with done-when criteria);
+  ChatGPT confirms it (`RELAY_AGREE` + its steps, or `RELAY_CONCERN`) and works
+  through it on its own, each result going back to ChatGPT; it ends with
+  `RELAY_MILESTONE_DONE` or `RELAY_BLOCKED`. Claude checks in with a progress
+  report (commands and exit codes, Git HEAD before → after, last result, the
+  Worker's plan and message) when the Worker is done, blocked or concerned,
+  on a LOOP verdict, on a message from you, or every `checkin_every` commands
+  (default 8), and replies `RELAY_ASSIGN` / `RELAY_CONTINUE: guidance` /
+  `RELAY_DONE` / `RELAY_ASK_HUMAN`. **step** pace is the previous behaviour.
+- New review policy **push** (default with milestone pace): the PM approves
+  only pushes, merges, rebases, GitHub changes, recursive deletes and
+  `curl | sh`, not every commit.
+- `prelay ade --pace milestone|step --checkin-every N`; `prelay pace PROJECT
+  milestone|step` switches a running run (the PM is told; a `RELAY_TASK` is then
+  taken as an assignment); pace menu and current milestone on dashboard cards;
+  `prelay status` shows commands since the last check-in.
+- Schema v5: `project_runtime.pace`, `checkin_every`.
+- E2E: a milestone run where the Worker runs two commands on its own and Claude
+  is asked twice in total.
+
 ## 2.4.1 — Tell the PM, in the dashboard
 
 - Each run card has a **Tell the PM** box (Tell ChatGPT in solo mode): type,

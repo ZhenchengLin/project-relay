@@ -25,8 +25,21 @@ const pages = {
 };
 const sends = [];
 
-// PM (Claude): plan -> approve the risky commit -> done once evidence shows it.
+// PM (Claude). Step pace: plan -> approve the risky commit -> done once evidence shows it.
+// Milestone pace: plan + one milestone -> done at the Worker's "milestone done" check-in.
 function planPm(prompt) {
+  if (prompt.includes("reports the milestone done")) {
+    return { text: "Verified in the report: hello.txt is committed.\n\nRELAY_PLAN\n- [x] T1 Create hello.txt\n"
+      + "- [x] T2 Commit it\nEND_RELAY_PLAN\n\nRELAY_DONE" };
+  }
+  if (prompt.includes("Project Relay ADE is starting") && prompt.includes("RELAY_ASSIGN")) {
+    return {
+      text: "Plan agreed below.\n\nRELAY_NOTE: commit only the files a task names\n\n"
+        + "RELAY_PLAN\n- [~] T1 Create hello.txt\n- [ ] T2 Commit it\nEND_RELAY_PLAN\n\n"
+        + "RELAY_ASSIGN\nCreate hello.txt containing the word hello and commit only that file with the message "
+        + "'add hello'. Done when git log -1 shows the commit.\nEND_RELAY_ASSIGN",
+    };
+  }
   if (prompt.includes("Relay will not run it until you decide")) {
     return { text: "The command only adds and commits hello.txt.\n\nRELAY_APPROVE" };
   }
@@ -45,8 +58,20 @@ function planPm(prompt) {
   return { text: "RELAY_ASK_HUMAN: unexpected prompt in the mock" };
 }
 
-// Worker (ChatGPT): one bash block per task.
+// Worker (ChatGPT): one bash block per task; in milestone pace it agrees the plan, works
+// through the milestone in two commands on its own, then reports it done.
 function planWorker(prompt) {
+  if (prompt.includes("Assignment from the PM") && prompt.includes("hello.txt")) {
+    return { text: "RELAY_AGREE\n1. create hello.txt\n2. commit it\n\n"
+      + `${FENCE}bash\necho hello > hello.txt && cat hello.txt\n${FENCE}\n`, thinkMs: 1000 };
+  }
+  if (prompt.includes("Your assignment (keep going")) {
+    if (/[0-9a-f]{7,} add hello/.test(prompt)) {
+      return { text: "RELAY_MILESTONE_DONE: hello.txt created and committed; git log -1 shows 'add hello'." };
+    }
+    return { text: `${FENCE}bash\ngit add hello.txt && git -c user.email=relay@test -c user.name=relay `
+      + `commit -qm "add hello" && git log -1 --oneline\n${FENCE}\n`, thinkMs: 1000 };
+  }
   if (prompt.includes("Task from the PM") && prompt.includes("hello.txt")) {
     return {
       text: `Here is the command.\n\n${FENCE}bash\necho hello > hello.txt && git add hello.txt && `

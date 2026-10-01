@@ -42,7 +42,8 @@ def latest(engine, db):
 
 def test_message_goes_to_the_pms_next_message_only(env):
     engine, db, root = env
-    engine.start(name="demo", root=root, mode="ade", goal="G", conversation_url=WORKER_URL, pm_conversation_url=PM_URL)
+    engine.start(name="demo", root=root, mode="ade", goal="G", conversation_url=WORKER_URL, pm_conversation_url=PM_URL,
+                 pace="step")
     drive(engine, "RELAY_TASK\necho hi\nEND_RELAY_TASK", page=PM_URL, lease="p",
           user="claude:user:r1", assistant="claude:assistant:r1")
     engine.tell("demo", "The repo is on GitHub: github.com/me/demo. Push to branch relay/work.")

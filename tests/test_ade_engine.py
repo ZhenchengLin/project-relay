@@ -59,6 +59,8 @@ def env(tmp_path):
 def start_ade(engine, root, **kw):
     kw.setdefault("conversation_url", WORKER_URL)
     kw.setdefault("pm_conversation_url", PM_URL)
+    kw.setdefault("pace", "step")      # these tests cover the step pace; milestone pace has its own tests
+    kw.setdefault("review_policy", "risky")
     return engine.start(name="demo", root=root, mode="ade", goal="Ship the parser", rules="never push", **kw)
 
 

@@ -34,6 +34,31 @@ It still costs nothing beyond the two web subscriptions: no API keys.
   PM receives the evidence (+ judge verdict) and decides the next step
 ```
 
+## Milestone pace (default)
+
+Step pace asks Claude about every command (plus reviews), which burns
+claude.ai usage. Milestone pace keeps the PM strategic:
+
+```
+PM kickoff ──► RELAY_PLAN + RELAY_ASSIGN <milestone, done-when criteria>
+Worker      ──► RELAY_AGREE + its step list + first bash block
+               (or RELAY_CONCERN: … → PM, nothing runs)
+Relay runs it ──► the output goes back to the Worker ──► next bash block …
+Worker      ──► RELAY_MILESTONE_DONE: <summary>  or  RELAY_BLOCKED: <why>
+PM check-in ◄── progress report: assignment, the Worker's plan, commands since
+               the last PM message with exit codes, Git HEAD before → after,
+               last result, judges
+PM          ──► RELAY_ASSIGN (next milestone) | RELAY_CONTINUE: <guidance> |
+               RELAY_DONE | RELAY_ASK_HUMAN
+```
+
+The PM is checked in when the Worker reports done, blocked or a concern, when
+the judges vote LOOP (two in a row stop the run), when you send a message
+(`prelay tell`), when the Worker stops producing usable commands, and at
+least every `checkin_every` commands (default 8). Reviews follow `--review`
+(`push` by default here). A `RELAY_TASK` under milestone pace is taken as an
+assignment, so a run can switch pace mid-way (`prelay pace`).
+
 ## Protocol (what the models must reply)
 
 PM planning reply — exactly one of:
@@ -60,7 +85,8 @@ Anything else gets one format nudge, then the run stops for a human.
 
 | Policy | PM reviews before running |
 |---|---|
-| `risky` (default) | `git commit`, `git push`, `rm`, `mv`, `chmod`, `curl … | sh`, package installs, scripts over 200 lines |
+| `push` (default, milestone pace) | `git push/merge/rebase`, `gh pr/release/repo …` changes, `rm -r`, `curl … | sh` |
+| `risky` (default, step pace) | `git commit`, `git push`, `rm`, `mv`, `chmod`, `curl … | sh`, package installs, scripts over 200 lines |
 | `always` | every command |
 | `never` | nothing (PM still sees every result) |
 

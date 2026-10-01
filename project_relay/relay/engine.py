@@ -21,6 +21,7 @@ Invariants:
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from dataclasses import asdict
@@ -139,14 +140,21 @@ class RelayEngine:
         mode: str = "solo",
         goal: str | None = None,
         rules: str = "",
-        review_policy: str = "risky",
+        review_policy: str | None = None,
         pm_conversation_url: str | None = None,
         pm_new_chat: bool = False,
+        pace: str | None = None,
+        checkin_every: int | None = None,
     ) -> dict[str, Any]:
         if conversation_url and new_chat:
             raise RelayRefused("Use either a conversation URL or --new-chat, not both.")
         if mode not in {"solo", "ade"}:
             raise RelayRefused(f"Unknown mode {mode!r}.")
+        pace = (pace or ("milestone" if mode == "ade" else "step")) if mode == "ade" else "step"
+        if pace not in ade.PACES:
+            raise RelayRefused(f"Pace must be one of {', '.join(ade.PACES)}.")
+        review_policy = review_policy or ("push" if pace == "milestone" else "risky")
+        checkin_every = max(1, int(checkin_every or self.cfg.get("checkin_every") or 8))
         if review_policy not in ade.REVIEW_POLICIES:
             raise RelayRefused(f"Review policy must be one of {', '.join(ade.REVIEW_POLICIES)}.")
         url = canonical_conversation_url(conversation_url) if conversation_url else None
@@ -179,7 +187,8 @@ class RelayEngine:
             session_id = store.create_session(conn, pid)
             store.put_runtime(conn, project_id=pid, session_id=session_id,
                               max_cycles=int(max_cycles or self.cfg["max_cycles"]),
-                              mode=mode, goal=goal or seed, review_policy=review_policy)
+                              mode=mode, goal=goal or seed, review_policy=review_policy,
+                              pace=pace, checkin_every=checkin_every)
             pm_conv = None
             if mode == "ade":
                 pm_conv = store.active_conversation(conn, pid, "pm")
@@ -192,7 +201,7 @@ class RelayEngine:
                                                         role="pm", site="claude")
                 kickoff, told = self._with_human(conn, pid, ade.pm_kickoff(
                     project=name, root=root, goal=goal or seed or "", rules=rules, git=git_now,
-                    memory=memory.render(conn, pid)))
+                    memory=memory.render(conn, pid), pace=pace))
                 request_id = store.create_request(
                     conn, session_id=session_id, conversation_id=pm_conv["id"], kind="PM_PLAN", role="pm",
                     prompt=kickoff, model=None,
@@ -209,6 +218,7 @@ class RelayEngine:
                 self._delivered(conn, pid, request_id, told)
         self._wake.set()
         return {"project": name, "session_id": session_id, "request_id": request_id, "mode": mode,
+                "pace": pace, "review_policy": review_policy, "checkin_every": checkin_every,
                 "conversation_url": active["conversation_url"],
                 "pm_conversation_url": pm_conv["conversation_url"] if pm_conv else None}
 
@@ -236,7 +246,8 @@ class RelayEngine:
             if conv is None:
                 raise RelayRefused("No active conversation; use start.")
             text = message or "The human reviewed the situation. Continue from the latest evidence."
-            prompt = text.rstrip() + "\n\n" + ade.PM_PROTOCOL + "\n" if role == "pm" else prompts.with_protocol(text)
+            prompt = (text.rstrip() + "\n\n" + ade.pm_protocol(rt["pace"]) + "\n" if role == "pm"
+                      else prompts.with_protocol(text))
             kind = "USER"
             # A chat that never received anything (its first message was not
             # persisted) has no context: send that first message again, with
@@ -298,6 +309,30 @@ class RelayEngine:
         self._wake.set()
         return {"queued": True, "remembered": bool(remember), "in_next_message_now": now}
 
+    def set_pace(self, name: str, pace: str, checkin_every: int | None = None) -> dict[str, Any]:
+        """Switch a run's ADE pace in place. The PM is told with its next message; a RELAY_TASK it
+        still sends under milestone pace is taken as an assignment."""
+        if pace not in ade.PACES:
+            raise RelayRefused(f"Pace must be one of {', '.join(ade.PACES)}.")
+        with self.lock, self.db.transaction() as conn:
+            pid, rt = self._runtime_for(conn, name)
+            if rt["mode"] != "ade":
+                raise RelayRefused(f"{name} is a solo run; pace applies to Relay ADE runs.")
+            every = max(1, int(checkin_every or rt["checkin_every"] or 8))
+            changed = rt["pace"] != pace or rt["checkin_every"] != every
+            store.update_runtime(conn, pid, pace=pace, checkin_every=every)
+            store.event(conn, project_id=pid, event_type="PACE_CHANGED", payload={"pace": pace, "checkin_every": every})
+        if changed and pace != rt["pace"]:
+            note = (f"Relay switched this run to milestone pace. From now on give the Worker a whole milestone with "
+                    f"{ade.ASSIGN_START} … {ade.ASSIGN_END} (what to achieve, done-when criteria). The Worker works "
+                    f"through it on its own; you are checked in when it is done, blocked or looping, or every "
+                    f"{every} commands. At a check-in you may also reply {ade.CONTINUE}: <guidance>."
+                    if pace == "milestone" else
+                    "Relay switched this run to step pace: give the Worker one small task at a time with "
+                    f"{ade.TASK_START} … {ade.TASK_END}; you see every result.")
+            self.tell(name, note)
+        return {"pace": pace, "checkin_every": every}
+
     @staticmethod
     def _pending_human(conn, project_id: str) -> list[tuple[int, str]]:
         delivered = conn.execute("SELECT COALESCE(MAX(id), 0) FROM events WHERE project_id = ? "
@@ -355,6 +390,11 @@ class RelayEngine:
                     "goal": rt["goal"],
                     "review_policy": rt["review_policy"],
                     "missing_tab": self.missing_tab(rt, last),
+                    "pace": rt["pace"],
+                    "checkin_every": rt["checkin_every"],
+                    "assignment": self._assignment(conn, rt) if rt["mode"] == "ade" and rt["session_id"] else "",
+                    "since_checkin": (len(self._commands_since_pm(conn, rt))
+                                      if rt["mode"] == "ade" and rt["session_id"] else 0),
                     "pending_human": [text for _, text in self._pending_human(conn, rt["project_id"])],
                     "model_mode": rt["model_mode"],
                     "cycle_count": rt["cycle_count"],
@@ -815,7 +855,7 @@ class RelayEngine:
                                        pending_prompt=pending_prompt,
                                        memory=memory.render(conn, rt["project_id"]))
         if role == "pm" and not pending_prompt.strip():
-            prompt = prompts.without_protocol(prompt) + "\n\n" + ade.PM_PROTOCOL + "\n"
+            prompt = prompts.without_protocol(prompt) + "\n\n" + ade.pm_protocol(rt["pace"]) + "\n"
         return store.create_request(
             conn, session_id=rt["session_id"], conversation_id=new["id"], kind="ROLLOVER_SEED", role=role,
             prompt=prompt, model=pending_model or None, detail=pending_detail,
@@ -866,7 +906,13 @@ class RelayEngine:
                 return
 
             ade_mode = rt["mode"] == "ade"
-            if ade_mode and not blocks:
+            milestone = ade_mode and rt["pace"] == "milestone"
+            if milestone and not blocks:
+                signal = ade.parse_worker(text)
+                if signal.kind in {"CONCERN", "MILESTONE_DONE", "BLOCKED"}:
+                    self._checkin(conn, rt, req, signal.kind, worker_message=signal.text or text)
+                    return
+            if ade_mode and not milestone and not blocks:
                 # The Worker declined or explained; the PM decides what happens next.
                 self._to_pm(conn, rt, req, ade.pm_evidence(
                     evidence="The Worker did not produce a command. Its reply:\n\n" + prompts.truncate_middle(text, 6000),
@@ -899,6 +945,10 @@ class RelayEngine:
                 task_detail = req["detail"] if ade_mode else None
                 if used < int(self.cfg["format_nudges"]):
                     self._finish_with(conn, rt, req, prompt=nudge, kind="NUDGE", successor_detail=task_detail)
+                elif milestone:
+                    self._checkin(conn, rt, req, "NO_COMMAND",
+                                  worker_message=f"Relay did not run the Worker's reply: {reason}\n\n"
+                                                 + prompts.truncate_middle(text, 3000))
                 elif ade_mode:
                     self._to_pm(conn, rt, req, ade.pm_evidence(
                         evidence=f"Relay did not run the Worker's command: {reason}\n\nWorker reply:\n\n"
@@ -935,6 +985,58 @@ class RelayEngine:
         cycles = store.recent_cycles(conn, rt["session_id"], 1)
         return cycles[-1]["terminal_output"] if cycles else None
 
+    def _assignment(self, conn, rt) -> str:
+        """The Worker's current milestone (milestone pace): the newest request that carries one."""
+        for row in conn.execute("SELECT detail FROM requests WHERE session_id = ? AND detail LIKE '%\"assignment\"%' "
+                                "ORDER BY sequence_number DESC LIMIT 20", (rt["session_id"],)):
+            try:
+                assignment = json.loads(row["detail"] or "{}").get("assignment")
+            except ValueError:
+                continue
+            if assignment:
+                return assignment
+        return ""
+
+    def _commands_since_pm(self, conn, rt) -> list[dict[str, Any]]:
+        """Commands run since the PM's last planning message (reviews do not count)."""
+        last_pm = conn.execute("SELECT COALESCE(MAX(sequence_number), 0) FROM requests WHERE session_id = ? "
+                               "AND role = 'pm' AND kind != 'PM_REVIEW'", (rt["session_id"],)).fetchone()[0]
+        rows = conn.execute(
+            """SELECT e.command_text, e.return_code, e.git_before_json, e.git_after_json FROM executions e
+               JOIN requests r ON r.id = e.request_id
+               WHERE r.session_id = ? AND r.sequence_number > ? AND e.completed_at IS NOT NULL
+               ORDER BY e.started_at""", (rt["session_id"], last_pm)).fetchall()
+        total = conn.execute("""SELECT COUNT(*) FROM executions e JOIN requests r ON r.id = e.request_id
+                                WHERE r.session_id = ? AND e.completed_at IS NOT NULL""",
+                             (rt["session_id"],)).fetchone()[0]
+        first = total - len(rows) + 1
+        return [{"n": first + i, "command": r["command_text"], "return_code": r["return_code"],
+                 "git_before": json.loads(r["git_before_json"] or "{}"),
+                 "git_after": json.loads(r["git_after_json"] or "{}")} for i, r in enumerate(rows)]
+
+    def _checkin(self, conn, rt, req, reason: str, *, worker_message: str = "", last_evidence: str = "",
+                 watchdog_line: str = "", from_state: str = "ASSISTANT_COMPLETE") -> str:
+        """Hand the PM a progress report (milestone pace)."""
+        commands = self._commands_since_pm(conn, rt)
+        opener = conn.execute("SELECT assistant_text FROM requests WHERE session_id = ? AND kind = 'ASSIGN' "
+                              "ORDER BY sequence_number DESC LIMIT 1", (rt["session_id"],)).fetchone()
+        worker_plan = ""
+        if opener and opener["assistant_text"]:
+            worker_plan = re.sub(r"`{3}.*?`{3}", "[first command]", opener["assistant_text"], flags=re.S).strip()
+        if not last_evidence and commands:
+            last_evidence = self._last_output(conn, rt) or ""
+        git_now = commands[-1]["git_after"] if commands else {}
+        prompt = ade.pm_checkin(
+            reason=reason, assignment=self._assignment(conn, rt) or "(none yet)", worker_plan=worker_plan,
+            worker_message=worker_message, commands=commands,
+            head_before=commands[0]["git_before"].get("head", "") if commands else "",
+            git_now=git_now, last_evidence=last_evidence, watchdog_line=watchdog_line,
+            checkin_every=rt["checkin_every"])
+        store.event(conn, project_id=rt["project_id"], request_id=req["id"], event_type="PM_CHECKIN",
+                    payload={"reason": reason, "commands": len(commands)})
+        return self._finish_with(conn, rt, req, role="pm", kind="PM_PLAN", prompt=prompt, from_state=from_state,
+                                 successor_detail=json.dumps({"checkin": reason}))
+
     def _pm_nudges_used(self, conn, rt) -> int:
         return self._consecutive(conn, rt, lambda r: r["role"] == "pm" and store.detail_json(r).get("nudge"))
 
@@ -962,6 +1064,28 @@ class RelayEngine:
             return
 
         decision = ade.parse_plan(text)
+        milestone = rt["pace"] == "milestone"
+        if milestone and decision.kind in {"ASSIGN", "TASK"}:
+            if rt["cycle_count"] >= rt["max_cycles"]:
+                self._human(conn, rt, req, f"Reached max cycles ({rt['max_cycles']}).", text)
+                return
+            plan_text = "\n".join(f"[{memory.MARK_BY_STATUS.get(t['status'], ' ')}] {t['task_key']} {t['title']}"
+                                  for t in memory.plan(conn, rt["project_id"]))
+            self._finish_with(conn, rt, req, role="worker", kind="ASSIGN",
+                              prompt=ade.worker_assignment(assignment=decision.text, plan=plan_text,
+                                                           last_result=self._last_output(conn, rt)),
+                              successor_detail=json.dumps({"assignment": decision.text}))
+            return
+        if milestone and decision.kind == "CONTINUE":
+            assignment = self._assignment(conn, rt)
+            if assignment:
+                self._finish_with(conn, rt, req, role="worker", kind="GUIDE",
+                                  prompt=ade.worker_guidance(guidance=decision.text or "Continue.",
+                                                             assignment=assignment),
+                                  successor_detail=json.dumps({"assignment": assignment}))
+                return
+        if not milestone and decision.kind == "ASSIGN":
+            decision = ade.PmDirective("TASK", decision.text)
         if decision.kind == "TASK":
             if rt["cycle_count"] >= rt["max_cycles"]:
                 self._human(conn, rt, req, f"Reached max cycles ({rt['max_cycles']}).", text)
@@ -977,7 +1101,8 @@ class RelayEngine:
         elif decision.kind == "ASK_HUMAN":
             self._human(conn, rt, req, "PM asks the human: " + decision.text[:400], text)
         elif self._pm_nudges_used(conn, rt) < int(self.cfg["format_nudges"]):
-            self._finish_with(conn, rt, req, role="pm", kind="PM_PLAN", prompt=ade.pm_nudge("RELAY_TASK"),
+            expected = "RELAY_ASSIGN / RELAY_CONTINUE" if milestone else "RELAY_TASK"
+            self._finish_with(conn, rt, req, role="pm", kind="PM_PLAN", prompt=ade.pm_nudge(expected, rt["pace"]),
                               successor_detail=json.dumps({"nudge": True}))
         else:
             self._human(conn, rt, req, "PM reply had no RELAY_TASK / RELAY_DONE / RELAY_ASK_HUMAN.", text)
@@ -1062,6 +1187,27 @@ class RelayEngine:
                     return_code=cycle["return_code"], output=cycle["terminal_output"],
                     git_before=cycle["git_before"], git_after=cycle["git_after"],
                     watchdog_line=watchdog_line, max_chars=int(self.cfg["evidence_max_chars"])))
+                if rt["pace"] == "milestone":
+                    reason = ("LOOP" if loop
+                              else "HUMAN" if self._pending_human(conn, rt["project_id"])
+                              else "PERIODIC" if len(self._commands_since_pm(conn, rt)) >= rt["checkin_every"]
+                              else None)
+                    if reason is None:
+                        assignment = self._assignment(conn, rt)
+                        next_prompt = ade.worker_evidence(evidence=evidence, assignment=assignment)
+                        transition_request_in(conn, request_id=req["id"], to_state="CONTINUE_READY",
+                                              updates={"detail": json.dumps({"next_prompt": next_prompt,
+                                                                             "next_role": "worker",
+                                                                             "next_kind": "CYCLE",
+                                                                             "assignment": assignment})})
+                        self._finish_with(conn, rt, req, role="worker", kind="CYCLE", prompt=next_prompt,
+                                          from_state="CONTINUE_READY",
+                                          successor_detail=json.dumps({"assignment": assignment}))
+                        return
+                    transition_request_in(conn, request_id=req["id"], to_state="CONTINUE_READY")
+                    self._checkin(conn, rt, req, reason, last_evidence=evidence, watchdog_line=watchdog_line,
+                                  from_state="CONTINUE_READY")
+                    return
                 next_prompt = ade.pm_evidence(evidence=evidence, watchdog_line=watchdog_line, loop=loop)
                 transition_request_in(conn, request_id=req["id"], to_state="CONTINUE_READY",
                                       updates={"detail": json.dumps({"next_prompt": next_prompt, "next_role": "pm",
@@ -1162,7 +1308,9 @@ class RelayEngine:
                 if self._consecutive(conn, rt, same_code) <= 1:
                     retry = prompts.reply_failed_prompt()
                     if req["role"] == "pm":
-                        retry = prompts.without_protocol(retry) + "\n\n" + ade.PM_PROTOCOL + "\n"
+                        retry = prompts.without_protocol(retry) + "\n\n" + ade.pm_protocol(rt["pace"]) + "\n"
+                    elif rt["mode"] == "ade" and rt["pace"] == "milestone":
+                        retry = prompts.without_protocol(retry) + "\n\n" + ade.WORKER_MILESTONE_PROTOCOL + "\n"
                     successor = self._queue(conn, rt, prompt=retry, kind="RETRY", role=req["role"],
                                             detail=store.detail_json(req).get("original_detail"))
 
@@ -1172,7 +1320,8 @@ class RelayEngine:
                     execution["command_text"] if execution else "", git_now or {})
                 if rt["mode"] == "ade":
                     successor = self._queue(conn, rt, kind="PM_PLAN", role="pm", prompt=ade.pm_evidence(
-                        evidence=prompts.without_protocol(recovery), watchdog_line="(interrupted)", loop=False))
+                        evidence=prompts.without_protocol(recovery), watchdog_line="(interrupted)", loop=False,
+                        pace=rt["pace"]))
                 else:
                     successor = self._queue(conn, rt, kind="RECOVERY", prompt=recovery)
 

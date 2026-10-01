@@ -14,18 +14,24 @@ between a chat window and a terminal.
 
 | Role | Where | Job |
 |---|---|---|
-| **PM** | claude.ai | Plans one small task at a time, reviews risky commands, reads the real terminal output, decides when the goal is done. |
-| **Worker** | chatgpt.com | Turns each task into exactly one Bash block. |
+| **PM** | claude.ai | Agrees a plan with the Worker, assigns milestones, checks in when the Worker finishes, is blocked or loops (or every few commands), approves pushes, decides when the goal is done. |
+| **Worker** | chatgpt.com | Confirms the plan, then works through its milestone on its own: one Bash block per reply, reading the real output each time. |
 | **Relay** | your machine | Moves the messages, runs the Bash, records everything, runs local loop judges, enforces the safety rules. |
 | **You** | a pinned dashboard tab | Watch, pause, stop, and answer when the PM asks for a human. |
 
 ```
-PM (Claude) ──task──▶ Worker (ChatGPT) ──one bash block──▶ Relay safety checks
-    ▲                                                            │
-    │                               risky? ──▶ PM review: approve / revise
-    │                                                            ▼
-    └── output + judge verdict ◀── local loop judges ◀── runs in your repo
+PM (Claude) ──plan + milestone──▶ Worker (ChatGPT) ──one bash block──▶ Relay safety checks
+    ▲                                  ▲                                  │
+    │                                  └── output ◀── runs in your repo ◀─┘
+    │                                       (repeats until the milestone is done)
+    └── check-in report: done / blocked / loop / every N commands / your message
 ```
+
+Two paces (`--pace`): **milestone** (default) as above, where Claude is asked
+roughly once per milestone or every N commands; and **step**, where the PM
+decides every single command (most control, most Claude messages). Switch a
+running run with `prelay pace PROJECT milestone|step` or the pace menu on its
+dashboard card.
 
 There is also a **solo mode** (one ChatGPT chat plans *and* writes the
 commands) and a **manual mode** (clipboard helpers, no extension).
@@ -102,6 +108,7 @@ goals go in a file: `--goal-file plan.md`.
 | `prelay status` | Every run: status, step, chats, cycle count |
 | `prelay log myapp` | Event log (add `--verbose` for browser diagnostics) |
 | `prelay pause myapp` / `prelay resume myapp [--message "…"]` / `prelay stop myapp` | Control a run |
+| `prelay pace myapp milestone [--checkin-every 8]` / `prelay pace myapp step` | Switch how the PM works on a running run |
 | `prelay tell myapp "The repo has a GitHub remote; push to relay/work" [--remember]` | Tell the PM something mid-run: it goes at the top of the PM's next message (also the **Tell the PM** box on each run card in the dashboard). `--remember` keeps it in project memory for every future chat. |
 | `prelay start myapp --url https://chatgpt.com/c/…` | Solo mode in an existing ChatGPT chat (or `--new-chat --seed "…"`) |
 | `prelay notes myapp [--add "…" \| --remove ID]` | Show/edit the project's memory and see its plan |
@@ -113,7 +120,8 @@ goals go in a file: `--goal-file plan.md`.
 
 | Policy | The PM must approve before a command runs |
 |---|---|
-| `risky` (default) | commits, pushes, merges, deletes, moves, permission changes, package installs, `curl … \| sh`, scripts over 200 lines |
+| `push` (default with milestone pace) | pushes, merges, rebases, GitHub changes (`gh pr/release/repo …`), recursive deletes, `curl … \| sh` |
+| `risky` (default with step pace) | commits, pushes, merges, deletes, moves, permission changes, package installs, `curl … \| sh`, scripts over 200 lines |
 | `always` | every command (safest, uses the most Claude messages) |
 | `never` | nothing (the PM still sees every result) |
 

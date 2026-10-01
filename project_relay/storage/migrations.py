@@ -7,6 +7,7 @@ from .schema import (
     MIGRATION_2_SQL,
     MIGRATION_3_SQL,
     MIGRATION_4_SQL,
+    MIGRATION_5_SQL,
     SCHEMA_VERSION,
 )
 
@@ -17,6 +18,7 @@ MIGRATIONS = (
     MIGRATION_2_SQL,
     MIGRATION_3_SQL,
     MIGRATION_4_SQL,
+    MIGRATION_5_SQL,
 )
 
 
