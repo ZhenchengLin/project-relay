@@ -309,7 +309,8 @@ class RelayEngine:
         self._wake.set()
         return {"queued": True, "remembered": bool(remember), "in_next_message_now": now}
 
-    def set_pace(self, name: str, pace: str, checkin_every: int | None = None) -> dict[str, Any]:
+    def set_pace(self, name: str, pace: str, checkin_every: int | None = None,
+                 review_policy: str | None = None) -> dict[str, Any]:
         """Switch a run's ADE pace in place. The PM is told with its next message; a RELAY_TASK it
         still sends under milestone pace is taken as an assignment."""
         if pace not in ade.PACES:
@@ -319,9 +320,13 @@ class RelayEngine:
             if rt["mode"] != "ade":
                 raise RelayRefused(f"{name} is a solo run; pace applies to Relay ADE runs.")
             every = max(1, int(checkin_every or rt["checkin_every"] or 8))
+            policy = review_policy or rt["review_policy"]
+            if policy not in ade.REVIEW_POLICIES:
+                raise RelayRefused(f"Review policy must be one of {', '.join(ade.REVIEW_POLICIES)}.")
             changed = rt["pace"] != pace or rt["checkin_every"] != every
-            store.update_runtime(conn, pid, pace=pace, checkin_every=every)
-            store.event(conn, project_id=pid, event_type="PACE_CHANGED", payload={"pace": pace, "checkin_every": every})
+            store.update_runtime(conn, pid, pace=pace, checkin_every=every, review_policy=policy)
+            store.event(conn, project_id=pid, event_type="PACE_CHANGED",
+                        payload={"pace": pace, "checkin_every": every, "review_policy": policy})
         if changed and pace != rt["pace"]:
             note = (f"Relay switched this run to milestone pace. From now on give the Worker a whole milestone with "
                     f"{ade.ASSIGN_START} … {ade.ASSIGN_END} (what to achieve, done-when criteria). The Worker works "
@@ -331,7 +336,7 @@ class RelayEngine:
                     "Relay switched this run to step pace: give the Worker one small task at a time with "
                     f"{ade.TASK_START} … {ade.TASK_END}; you see every result.")
             self.tell(name, note)
-        return {"pace": pace, "checkin_every": every}
+        return {"pace": pace, "checkin_every": every, "review_policy": policy}
 
     @staticmethod
     def _pending_human(conn, project_id: str) -> list[tuple[int, str]]:

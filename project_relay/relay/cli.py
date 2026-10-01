@@ -242,10 +242,11 @@ def cmd_control(args: Any) -> int:
 
 def cmd_pace(args: Any) -> int:
     result = call("POST", "/v2/control/pace", {"project": args.project, "pace": args.pace,
-                                                "checkin_every": args.checkin_every}, port=args.port)
+                                                "checkin_every": args.checkin_every, "review_policy": args.review},
+                  port=args.port)
     print(f"{args.project}: {result['pace']} pace"
           + (f", PM checks in at least every {result['checkin_every']} commands" if result["pace"] == "milestone" else "")
-          + ". The PM is told with its next message.")
+          + f", review: {result['review_policy']}. The PM is told with its next message.")
     return 0
 
 
@@ -433,6 +434,8 @@ def add_commands(sub: Any) -> None:
     p.add_argument("project")
     p.add_argument("pace", choices=["milestone", "step"])
     p.add_argument("--checkin-every", type=int, metavar="N", help="Milestone pace: PM checks in every N commands.")
+    p.add_argument("--review", choices=["push", "risky", "always", "never"],
+                   help="Also change which commands the PM approves (push suits milestone pace).")
     p.set_defaults(func=cmd_pace)
 
     p = rs.add_parser("tell", help="Tell the PM (or ChatGPT in solo mode) something; it arrives with "

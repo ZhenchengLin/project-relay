@@ -212,7 +212,7 @@ def put_runtime(
 
 
 RUNTIME_FIELDS = frozenset({"status", "reason", "model_mode", "progress_streak", "cycle_count", "pace",
-                            "checkin_every"})
+                            "checkin_every", "review_policy"})
 
 
 def update_runtime(conn: sqlite3.Connection, project_id: str, **fields: Any) -> None:

@@ -162,8 +162,8 @@ def test_step_pace_still_works_and_assign_is_treated_as_a_task(env):
 def test_switching_a_step_run_to_milestone_tells_the_pm_and_takes_a_task_as_an_assignment(env):
     engine, db, runner, judge, root = env
     start(engine, root, pace="step", review_policy="never")
-    out = engine.set_pace("demo", "milestone", checkin_every=5)
-    assert out == {"pace": "milestone", "checkin_every": 5}
+    out = engine.set_pace("demo", "milestone", checkin_every=5, review_policy="push")
+    assert out == {"pace": "milestone", "checkin_every": 5, "review_policy": "push"}
     rt, req = latest(db)
     assert rt["pace"] == "milestone" and "switched this run to milestone pace" in req["prompt_text"]
     reply_as(engine, "pm", "RELAY_TASK\nMake the build green\nEND_RELAY_TASK")

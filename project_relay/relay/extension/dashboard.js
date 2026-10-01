@@ -227,7 +227,8 @@ function paceSwitch(rt) {
     el("option", { value: "milestone", ...(rt.pace === "milestone" ? { selected: "" } : {}) }, "milestones"),
     el("option", { value: "step", ...(rt.pace === "step" ? { selected: "" } : {}) }, "every step"));
   select.addEventListener("change", async () => {
-    const res = await api("POST", "/v2/control/pace", { project: rt.project, pace: select.value });
+    const res = await api("POST", "/v2/control/pace", { project: rt.project, pace: select.value,
+      review_policy: select.value === "milestone" ? "push" : "risky" });
     if (!res.ok) alert(res.data.error || "Could not change the pace.");
     refresh();
   });
