@@ -1,3 +1,10 @@
+## 2.4.1 — Tell the PM, in the dashboard
+
+- Each run card has a **Tell the PM** box (Tell ChatGPT in solo mode): type,
+  tick "Remember it for every future chat" if it is a lasting fact, press Send
+  or ⌘Enter. Messages waiting to go out are listed under it. The box keeps
+  what you type and the cursor across the 2-second refresh.
+
 ## 2.4.0 — Tell the PM
 
 - `prelay tell PROJECT "…" [--remember]` and **Tell the PM…** on each run card:

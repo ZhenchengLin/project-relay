@@ -239,6 +239,57 @@ function goalView(rt) {
   return box;
 }
 
+// "Tell the PM": one composer per run, reused across the 2-second refresh so
+// what you are typing (and the cursor) survives it.
+const tellBoxes = {};
+
+function tellBox(rt, planner) {
+  let box = tellBoxes[rt.project];
+  if (!box) {
+    const input = el("textarea", { class: "tell-input", rows: "2", "aria-label": "Message for the planner" });
+    const remember = el("input", { type: "checkbox" });
+    const send = el("button", { class: "primary small" }, "Send");
+    const note = el("span", { class: "hint tell-note" });
+    const pending = el("div", { class: "tell-pending" });
+    const title = el("label", { class: "tell-title" });
+    const node = el("div", { class: "tell" },
+      title, input,
+      el("div", { class: "tell-row" },
+        el("label", { class: "switch tell-remember" }, remember, "Remember it for every future chat"),
+        note, send),
+      pending);
+    const submit = async () => {
+      const text = input.value.trim();
+      if (!text) return input.focus();
+      send.disabled = true;
+      const res = await api("POST", "/v2/control/tell", { project: rt.project, text, remember: remember.checked });
+      send.disabled = false;
+      if (!res.ok) {
+        note.textContent = res.data.error || "Could not send.";
+        return;
+      }
+      input.value = "";
+      remember.checked = false;
+      note.textContent = res.data.in_next_message_now ? "Added to the message going out now." : "Queued for its next message.";
+      refresh();
+    };
+    send.addEventListener("click", submit);
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); }
+    });
+    box = tellBoxes[rt.project] = { node, input, title, pending };
+  }
+  box.title.textContent = `Tell the ${planner}`;
+  box.input.placeholder = rt.mode === "ade"
+    ? "e.g. This project has a GitHub repo (origin). Push verified commits to main. — goes at the top of the PM's next message; the run keeps going (⌘Enter to send)"
+    : "e.g. Use the GitHub remote origin. — goes at the top of ChatGPT's next message (⌘Enter to send)";
+  const waiting = rt.pending_human || [];
+  box.pending.replaceChildren(...waiting.map((t) =>
+    el("div", { class: "tell-chip", title: t }, "Waiting to send: “", t.length > 160 ? t.slice(0, 157) + "…" : t, "”")));
+  // A placeholder: refresh() swaps the live composer in, in the same step as the redraw.
+  return el("span", { "data-tell": rt.project });
+}
+
 async function runCard(rt) {
   const events = await loadTimeline(rt.project);
   const notes = await notesView(rt);
@@ -253,15 +304,6 @@ async function runCard(rt) {
     control("resume", rt.project, message ? { message } : {});
   };
   const planner = rt.mode === "ade" ? "PM (Claude)" : "ChatGPT";
-  const tell = async () => {
-    const text = prompt(`Tell the ${planner} something. It goes at the top of its next message; the run keeps going.`);
-    if (!text || !text.trim()) return;
-    const remember = confirm("Also keep it in project memory, so every future chat (after a rollover or restart) "
-      + "gets it too?\n\nOK = remember it · Cancel = just this once");
-    const res = await api("POST", "/v2/control/tell", { project: rt.project, text: text.trim(), remember });
-    if (!res.ok) alert(res.data.error || "Could not queue the message.");
-    refresh();
-  };
   const card = el("div", { class: `panel card st-${rt.missing_tab ? "HUMAN_REQUIRED" : rt.status}` },
     el("div", { class: "head" },
       el("div", {},
@@ -278,17 +320,12 @@ async function runCard(rt) {
             ? el("button", { class: "danger", onclick: () => confirm(`Stop ${rt.project}?`) && control("stop", rt.project) }, "Stop")
             : null),
         el("div", { class: "right" },
-          el("button", { onclick: tell, title: "Message the planner without pausing the run" },
-            rt.mode === "ade" ? "Tell the PM…" : "Tell ChatGPT…"),
           el("button", { onclick: () => arrange(rt) }, "Arrange windows"),
           rt.status !== "RUNNING"
             ? el("button", { class: "primary", onclick: resume }, rt.status === "PAUSED" ? "Resume" : "Resume with a message…")
             : null))),
     el("div", { class: "step" }, stepText(rt)),
-    (rt.pending_human || []).length
-      ? el("p", { class: "muted" }, `Waiting to tell the ${planner} with its next message: `,
-        ...(rt.pending_human).map((t, i) => el("span", {}, i ? " · " : "", `“${t.length > 140 ? t.slice(0, 137) + "…" : t}”`)))
-      : null,
+    tellBox(rt, planner),
     rt.reason && rt.status !== "RUNNING"
       ? el("p", { class: rt.status === "FINISHED" || rt.status === "STOPPED" ? "muted" : "error" }, rt.reason)
       : null,
@@ -333,10 +370,22 @@ async function refresh() {
   const runtimes = status.data.runtimes.filter((rt) => rt.status !== "STOPPED" || timelines[rt.project]);
   const cards = await Promise.all(runtimes.map(runCard));
   const scrolled = [...document.querySelectorAll("[data-scroll]")].map((n) => [n.dataset.scroll, n.scrollTop]);
+  // Everything from here to the end is synchronous, so no keystroke is lost.
+  const focused = document.activeElement;
+  const selection = focused && focused.classList.contains("tell-input")
+    ? [focused.selectionStart, focused.selectionEnd] : null;
   $("runs").replaceChildren(...(cards.length ? cards : [el("p", { class: "muted" }, "No runs yet. Start one below.")]));
   for (const [key, top] of scrolled) {
     const node = document.querySelector(`[data-scroll="${CSS.escape(key)}"]`);
     if (node) node.scrollTop = top;
+  }
+  for (const slot of document.querySelectorAll("[data-tell]")) {
+    const box = tellBoxes[slot.dataset.tell];
+    if (box) slot.replaceWith(box.node);
+  }
+  if (selection && focused.isConnected) {
+    focused.focus({ preventScroll: true });
+    focused.setSelectionRange(...selection);
   }
 }
 
